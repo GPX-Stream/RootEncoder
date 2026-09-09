@@ -9,7 +9,7 @@ pinned to one cannot be moved to the other without code changes.
 |---|---|---|
 | `master` | — | Mirror of `pedroSG94/RootEncoder` master. Fast-forward only, never a GPX commit. |
 | `gpx-master` | upstream `49421b686` (2026-07-20) | Frozen. The line `gpxnative-ai` builds against. |
-| `gpx-2.8` | upstream `9a9ca124f` (2026-07-30) | Active. The line `gpxstream-app` builds against. Synced forward since; latest merged upstream is `300d99fe1` (R31, 2026-08-19). |
+| `gpx-2.8` | upstream `9a9ca124f` (2026-07-30) | Active. The line `gpxstream-app` builds against. Synced forward since; latest merged upstream is `1285703b` (R35, 2026-09-09). |
 
 ## Tags and who consumes them
 
@@ -50,9 +50,10 @@ given. `GPX patch` where no item covers it — several small changes were made a
 item and were never enumerated separately. A bare `GPX patch` is preferred over guessing a number,
 because a wrong attribution is worse than an absent one.
 
-**Coverage: all 31 files that differ from the merged upstream head carry at least one marker**
-(swept 2026-08-19 against `pedro/master` @ `300d99fe1`; the count dropped from 32 because R1's
-file, `CodecUtil.java`, no longer differs — upstream absorbed the change and R1 retired). The baseline is the *merged* upstream head,
+**Coverage: 37 of the 39 files that differ from the merged upstream head carry at least one
+marker** (swept 2026-09-09 against `pedro/master` @ `1285703b`, R35; the 2 unmarked are
+`TransportPrimerTest.kt` and `TransportConstructionTest.kt`, wholly new R33 test files with
+no upstream code to mark against). The baseline is the *merged* upstream head,
 not the branch point: since R26 and R27 brought upstream commits in, a diff against the original
 `9a9ca124f` base also lists files upstream changed, which carry no GPX work and never will. Two
 caveats on reading a grep as complete:
@@ -145,8 +146,15 @@ into the attached preview target, independent of streaming/recording state, so t
 build a local-preview liveness watchdog without a second listener on the camera's own
 `SurfaceTexture` (which the fork already claims exclusively for its own render loop). Zero edits
 to `StreamBase.kt` from any of R33/R34/fork change 8/9/10. `gradlew assembleDebug test` passes across
-every module and the sample app with all of the above in the tree. A consumer pin move onto this
-head therefore also promotes the 27 previously-unbenched R31/R32 commits at the same time, so the
-next bench gate consciously widens to cover R31/R32's A/V-sync and frame-pacing watch items
-alongside R33's live protocol swaps, R34's preview-attach fix, and fork change 8/9/10's own
-composite/liveness behavior.
+every module and the sample app with all of the above in the tree. On top of this, R35 merges
+upstream `pedro/master` @ `1285703b` (a new congestion-aware `QueueAwareBitrateAdapter` utility
+not wired into anything GPX touches, a Camera2 metering-region-clear correctness fix, a
+`BitrateManager.reset()` timestamp fix, and a `StreamBase.stopSourcesImp()` teardown reorder —
+`glInterface.stop()` now runs after the three encoder `.stop()` calls, the one edit to
+`StreamBase.kt` in this range, auto-merged cleanly under R30's synchronized-teardown wrapper
+with no conflict). A consumer pin move onto this head therefore also promotes the 27
+previously-unbenched R31/R32 commits at the same time, so the next bench gate consciously
+widens to cover R31/R32's A/V-sync and frame-pacing watch items alongside R33's live protocol
+swaps, R34's preview-attach fix, fork change 8/9/10's own composite/liveness behavior, and
+R35's teardown-order change (ordinary stop/release paths, not a new invariant — low watch
+priority, but new to this range).

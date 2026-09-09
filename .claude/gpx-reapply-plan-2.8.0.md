@@ -320,6 +320,45 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
         `gpxstream-app`'s `libs.versions.toml` mockk note already carries) — so its
         delegate-routing and swap paths are covered by the consumer's driver tests through the
         composite build, plus the bench gate.
+- [x] R35 — Merge upstream `pedro/master` @ `1285703b` (18 commits, 14 non-merge, past the
+      `300d99fe1` R31 base). Carries no new GPX code, so it adds no `GPX R35` marker. What
+      arrives:
+      - **`QueueAwareBitrateAdapter`** (`cd6ea8378`, `969d335f1`, `c3cc3f57c`, `8af50f092`,
+        `3456aa7fe`) — a new congestion-aware bitrate-adaptation strategy in
+        `library/util/`, alongside the existing `BitrateAdapter`, reacting to send-queue
+        depth rather than only measured throughput. Not referenced anywhere in
+        `library`/`encoder`/`common` today — a consumer-side opt-in, not wired to anything
+        GPX touches.
+      - **Camera2 region-clear fix** (`e34e12c99`). AWB/AE/AF metering-region clearing used
+        an invalid zero-size `MeteringRectangle(0,0,0,0,DONT_CARE)`; replaced with a
+        rectangle spanning the full sensor active-array size via a new `clearRegions()`
+        helper. Lands in `Camera2ApiManager.kt` alongside R23's camera open/close markers,
+        but in the unrelated AWB/AE/AF helper functions — no logical overlap.
+      - **`BitrateManager.reset()` fix** (`67007d634`) — now also resets `timeStamp` to the
+        current time, so a bitrate calculation immediately after a reset/reconnect can't
+        compute against a stale timestamp and read a bogus low bitrate from an inflated
+        elapsed-time delta.
+      - **`StreamBase.kt` teardown reorder** (`0c3e1ee1d`, "stop gl after encoders") — in
+        `stopSourcesImp()`, `if (!isOnPreview) glInterface.stop()` now runs after the three
+        encoder `.stop()` calls instead of before. This is the one genuine overlap with GPX
+        customization: `stopSourcesImp()` sits directly under R30's synchronized-teardown
+        wrapper. Auto-merged with no conflict; R30's lock and comments are untouched, only
+        the reorder landed — verified by inspection post-merge.
+      - **`Camera2Base.setCustomRequest`/`setCustomOnCaptureCompletedCallback`**
+        (`da779104f`) — new hooks for a consumer to touch the raw `CaptureRequest.Builder`
+        and capture-completed callback. Zero overlap with GPX.
+      - **`getSuspendContext` extension** (`378a74100`) — a small coroutine `Continuation`
+        helper in `common/Extensions.kt`. Internal-use, unrelated to any GPX path.
+      - Housekeeping: AGP 9.3.1→9.3.2, gradle-wrapper 9.6.1→9.7.1, version bump to 2.8.1,
+        doc regeneration.
+
+      Zero conflicts on merge (verified twice: once as a throwaway test merge before this
+      entry was authorized, once for real when performing it). Marker check: the `GPX`
+      marker inventory (178 lines) is byte-identical before and after the merge — nothing
+      silently dropped. File coverage: every file still differing from `pedro/master` after
+      the merge carries a marker, except two pre-existing R33 test files
+      (`TransportPrimerTest.kt`, `TransportConstructionTest.kt`) that predate this sync and
+      have no upstream code to mark against.
 - [x] R24 — Tag `2.8.0-gpx2` and bump the pin in `gpxstream-app`. **Done 2026-08-12**: the tag
       was cut at `a88f8d58f` (R28 included) with the consumer's pin move (gpxstream-app #46) for
       the S8 tier flip, superseding the 2026-08-03 hold; `2.8.0-gpx3` followed 2026-08-13 with
