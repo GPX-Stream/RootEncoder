@@ -442,6 +442,13 @@ class Camera2ApiManager(context: Context) {
         }
     }
 
+    private fun clearRegions(): Array<MeteringRectangle>? {
+        val sensor = cameraCharacteristics?.secureGet(
+            CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return null
+        return arrayOf(MeteringRectangle(0, 0, sensor.width(), sensor.height(),
+            MeteringRectangle.METERING_WEIGHT_DONT_CARE))
+    }
+
     /**
      * @param mode value from CameraCharacteristics.CONTROL_AWB_MODE_*
      */
@@ -452,8 +459,7 @@ class Camera2ApiManager(context: Context) {
         if (!modes.contains(mode)) return false
         val maxRegionsAwb = characteristics.secureGet(CameraCharacteristics.CONTROL_MAX_REGIONS_AWB) ?: 0
         if (maxRegionsAwb > 0) {
-            val clearRect = MeteringRectangle(0, 0, 0, 0, MeteringRectangle.METERING_WEIGHT_DONT_CARE)
-            builderInputSurface.set(CaptureRequest.CONTROL_AWB_REGIONS, arrayOf(clearRect))
+            clearRegions()?.let { builderInputSurface.set(CaptureRequest.CONTROL_AWB_REGIONS, it) }
         }
         builderInputSurface.set(CaptureRequest.CONTROL_AWB_MODE, mode)
         isAutoWhiteBalanceEnabled = applyRequest(builderInputSurface)
@@ -501,8 +507,7 @@ class Camera2ApiManager(context: Context) {
         if (!modes.contains(CaptureRequest.CONTROL_AE_MODE_ON)) return false
         val maxRegionsAe = characteristics.secureGet(CameraCharacteristics.CONTROL_MAX_REGIONS_AE) ?: 0
         if (maxRegionsAe > 0) {
-            val clearRect = MeteringRectangle(0, 0, 0, 0, MeteringRectangle.METERING_WEIGHT_DONT_CARE)
-            builderInputSurface.set(CaptureRequest.CONTROL_AE_REGIONS, arrayOf(clearRect))
+            clearRegions()?.let { builderInputSurface.set(CaptureRequest.CONTROL_AE_REGIONS, it) }
         }
         builderInputSurface.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
         isAutoExposureEnabled = applyRequest(builderInputSurface)
@@ -823,8 +828,7 @@ class Camera2ApiManager(context: Context) {
                 builderInputSurface.setTag("")
                 val maxRegionsAf = characteristics.secureGet(CameraCharacteristics.CONTROL_MAX_REGIONS_AF) ?: 0
                 if (maxRegionsAf > 0) {
-                    val clearRect = MeteringRectangle(0, 0, 0, 0, MeteringRectangle.METERING_WEIGHT_DONT_CARE)
-                    builderInputSurface.set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(clearRect))
+                    clearRegions()?.let { builderInputSurface.set(CaptureRequest.CONTROL_AF_REGIONS, it) }
                 }
                 builderInputSurface.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_CANCEL)
                 builderInputSurface.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
