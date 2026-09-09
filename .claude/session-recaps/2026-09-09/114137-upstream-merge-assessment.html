@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<script type="text/markdown" id="recap">
+# Upstream merge assessment — RootEncoder fork, 2026-09-09
+
+## Outcome
+
+Investigation-only task: assess whether recent pedroSG94/RootEncoder upstream commits are
+worth merging into this fork's active branch, `gpx-2.8`. No code was merged, pushed, or
+changed on `gpx-2.8` or `master`. **Recommendation: worth merging as-is** — small, low-risk,
+mostly bug fixes plus one useful new feature. Did not execute the merge; that's a follow-up
+decision for Andy.
+
+## Correction to the task's premise (important — read before trusting the original brief)
+
+The task as handed to this session claimed: local `master` (49421b686) was "107 commits
+behind `alexsafe/master`", and that `alexsafe/master` was the branch alexsafe uses to
+periodically absorb pedroSG94 upstream PRs. **Both the remote and the framing were wrong.**
+
+Checked directly:
+- `alexsafe` remote has no `gpx-2.8` branch at all (`unknown revision`).
+- `alexsafe/master` is actually **behind** local `master` by 226 commits (0 ahead) — a
+  stale/unrelated fork, not a sync mirror.
+- The real "107 commits" gap was between local `master` (49421b686) and **`origin/master`**
+  (300d99fe1, andoodle's own fork) — and that gap had **already been assessed and merged**
+  into `gpx-2.8` as "R31" (plus R32-R34 and fork changes 8-10) on 2026-08-19, per
+  `.claude/gpx-branch-policy.md`. `git merge-base --is-ancestor origin/master gpx-2.8`
+  confirms `origin/master` is already an ancestor of `gpx-2.8`. Local `master`'s branch
+  pointer in this checkout was just stale (never fast-forwarded), not unassessed work.
+
+Saved as project memory: `project_remotes_and_sync_state.md` — so the next session doesn't
+get tripped up by the same stale `alexsafe` framing.
+
+**Corrected scope:** the real open gap is `origin/master..upstream/master` (`upstream` =
+pedroSG94/RootEncoder, real upstream) = **18 commits**, none merged into `gpx-2.8` yet. This
+recap assesses that 18-commit gap instead.
+
+## What's in the 18-commit gap
+
+Non-doc diffstat: 21 files (14 excluding docs/gradle-wrapper churn), 791 insertions / 188
+deletions between `origin/master` (300d99fe1) and `upstream/master` (1285703b, "version
+2.8.1").
+
+**New feature — `QueueAwareBitrateAdapter.kt`** (`library/util/`, 129 lines + tests): a new
+bitrate-adaptation strategy alongside the existing `BitrateAdapter`, reacting to send-queue
+depth (congestion) rather than only throughput. Landed across 3 commits (`add new bitrate
+adapter`, `fixing new bitrate adapter`, `fix QueueAwareBitrateAdapter measured`) plus a later
+`allow change ceilingttl` tweak and a `fixing tcp collapse` correction. GPX doesn't reference
+`BitrateAdapter`/`QueueAwareBitrateAdapter` anywhere in `library`/`encoder`/`common` — it's a
+consumer-facing utility the app itself would have to opt into. Worth flagging to
+`gpxstream-app` separately if it wants queue-aware bitrate adaptation for degrading links.
+
+**Bug fix — Camera2 region-clearing** (`Camera2ApiManager.kt`, "fix clear regions"): the old
+code cleared AWB/AE/AF metering regions with a **zero-size** `MeteringRectangle(0,0,0,0,
+DONT_CARE)`, which is not a valid "clear" — replaced with a rectangle spanning the full
+sensor's active array size. Real correctness fix for anyone calling the region-clear paths.
+
+**Bug fix — `BitrateManager.reset()`**: now also resets `timeStamp` to current time on reset,
+so a bitrate calc right after a reset/reconnect doesn't compute against a stale timestamp
+(would otherwise produce a bogus low-bitrate reading from an inflated elapsed-time delta).
+Small but real; relevant to any reconnect-heavy live-streaming path.
+
+**Bug fix — `StreamBase.kt` teardown ordering** ("stop gl after encoders", 1 line): in
+`stopSourcesImp()`, moved `if (!isOnPreview) glInterface.stop()` from *before* the three
+encoder `.stop()` calls to *after* them. **This is the one file where upstream and GPX
+customization genuinely intersect** — `stopSourcesImp()` sits directly under GPX's R30
+synchronized-teardown wrapper. Verified via test merge (see below): auto-merges cleanly,
+GPX's R30 lock/comment structure stays fully intact, only the reorder lands.
+
+**New feature — `Camera2Base.java`**: `setCustomRequest` / `setCustomOnCaptureCompletedCallback`
+(27 lines), letting a consumer hook the raw `CaptureRequest.Builder` and capture-completed
+callback. Not touched by GPX; pure addition, zero overlap.
+
+**Small utility — `getSuspendContext`** in `common/Extensions.kt`: a coroutine `Continuation`
+helper for bridging callback APIs into suspend functions. Internal-use, low relevance.
+
+**Noise / non-functional:** `Bump agp 9.3.1→9.3.2`, `Bump gradle-wrapper 9.6.1→9.7.1`,
+`version 2.8.1`, `update docs`, and a large volume of regenerated Dokka HTML under `docs/`
+(pure doc-gen churn, not hand-written).
+
+## Overlap check against GPX's own customizations
+
+Intersected GPX-marked files (`git grep -l "GPX" -- "*.kt" "*.java"`, 34 files) against files
+touched in the 18-commit gap (14 non-doc files): **2 files overlap** —
+`encoder/.../Camera2ApiManager.kt` and `library/.../StreamBase.kt`.
+
+- **Camera2ApiManager.kt**: GPX's markers (R23) are all in the camera open/close state
+  machine (~lines 111-1149, semaphore/generation logic). Upstream's "clear regions" fix
+  touches AWB/AE/AF metering-region helper functions (~lines 403-789). Different functions,
+  no logical overlap — proximity in the same file only.
+- **StreamBase.kt**: covered above — genuine overlap (same function, `stopSourcesImp()`,
+  adjacent to R30's synchronization), but the two changes don't touch the same lines and
+  merge cleanly.
+
+## Conflict test (executed, then reverted — nothing left in the tree)
+
+Per `~/.claude/rules/worktree-workflow.md`: created a worktree off `origin/gpx-2.8` at
+`.claude/worktrees/upstream-merge-assessment` on a throwaway branch of the same name (since
+`alexsafe/gpx-2.8` doesn't exist, used the real active tip instead). Ran
+`git merge --no-commit --no-ff upstream/master` there:
+
+- **Result: clean merge, zero conflicts.** Both intersecting files (`Camera2ApiManager.kt`,
+  `StreamBase.kt`) auto-merged with no manual resolution needed.
+- Manually inspected the merged `stopSourcesImp()` in `StreamBase.kt`: the `glInterface.stop()`
+  reorder landed correctly, GPX's R30 synchronized-wrapper comments and lock structure
+  survived untouched.
+- `git merge --abort`, then removed the worktree and deleted the throwaway branch — confirmed
+  0 unique commits and 0 diff against `gpx-2.8` before removal, so nothing was lost. Main
+  checkout (`gpx-2.8`, working tree clean, no changes) untouched throughout.
+
+## Recommendation
+
+**Worth merging `upstream/master` (1285703b) into `gpx-2.8` as-is.** Reasoning:
+- Clean merge, zero conflicts, including in the two files where GPX and upstream both touch
+  code.
+- The only genuine overlap (`StreamBase.kt` teardown order) is a real upstream correctness
+  fix that composes fine with GPX's R30 locking — verified, not just assumed.
+- Real value: two correctness fixes (Camera2 region-clearing, BitrateManager reset timestamp)
+  plus one potentially useful new feature (`QueueAwareBitrateAdapter`) for a live-streaming
+  consumer dealing with degrading links.
+- Everything else is dependency bumps, a version bump, and doc regeneration — harmless noise.
+
+No cherry-picking needed — the whole 18-commit range is small and coherent enough to take
+wholesale rather than picking apart. This would be its own sync entry (next `R<N>` per
+`.claude/gpx-reapply-plan-2.8.0.md`'s numbering) following the `upstream-sync` skill's
+procedure (fast-forward `master` to `upstream/master` first, then merge into `gpx-2.8`,
+verify markers, update the branch-policy doc, build gate, commit, push). Not executed here —
+this session's job ended at the recommendation per the task brief.
+
+## Last Updated — 2026-09-09, same session
+
+Andy asked to proceed with the actual sync mid-session. Executed the full `upstream-sync`
+procedure and **landed it**:
+
+- Fast-forwarded local `master` to `upstream/master` (1285703b), pushed to `origin/master`
+  (300d99fe1 → 1285703ba).
+- Merged into `gpx-2.8` in a fresh worktree (`upstream-sync-r35`, off `gpx-2.8` tip
+  `390611e43`): zero conflicts, matching the earlier throwaway test-merge exactly. Committed
+  as `GPX R35: merge upstream pedro/master (queue-aware bitrate adapter, Camera2
+  region-clear fix, BitrateManager reset fix)` (`d8e4684f2`).
+- Marker verification: 178 GPX marker lines byte-identical before/after; 37 of 39 files
+  differing from the new upstream head carry a marker (the 2 without are pre-existing R33
+  test files with no upstream code to mark against).
+- Updated `.claude/gpx-branch-policy.md` (branch table's synced-through hash, marker
+  coverage count/date, verification-status paragraph — also corrected its stale "zero edits
+  to StreamBase.kt" claim, since R35 does touch it) and `.claude/gpx-reapply-plan-2.8.0.md`
+  (new R35 checklist entry, modeled on R26/R31's format). Committed as `GPX docs: record R35
+  upstream sync in branch policy and reapply plan` (`c166cce70`).
+- Build gate: `gradlew assembleDebug test` in the worktree — `BUILD SUCCESSFUL`, 344 tasks,
+  every module including the sample app.
+- Fast-forwarded the main checkout's `gpx-2.8` to `c166cce70` (`git merge --ff-only`), pushed
+  to `origin/gpx-2.8` (390611e43 → c166cce70). Removed the `upstream-sync-r35` worktree and
+  branch — merged history, nothing lost.
+
+**Final state: `gpx-2.8` and `master` both pushed to `origin`, working tree clean.** No tag
+or pin move — per `.claude/gpx-branch-policy.md` rules, that's a separate consumer-side
+decision (bench-gate on the PDT, then tag + move `gpxstream-app`'s pin together). The branch
+head now carries R31-R35 plus fork changes 8-10, all still build-verified only; the next
+bench pass should widen to cover R35's `StreamBase` teardown-order change alongside the
+existing R31/R33/R34 watch items already noted in the branch-policy doc.
+
+## AI notes (scratch — optional, written by Claude for future sessions)
+
+The task brief itself was stale (see Correction section) — it's worth treating any
+inbound "N commits behind remote X" framing for this repo with suspicion and re-deriving
+from `.claude/gpx-branch-policy.md` + a fresh fetch, rather than trusting the numbers as
+given. The branch-policy doc is unusually authoritative and current here (last updated
+2026-08-19 sweep) — always check it before spending time on independent git archaeology.
+</script>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Upstream Merge Assessment — 2026-09-09 11:41</title>
+<style>
+  :root{--red-500:#EF3340;--red-700:#B3242B;--red-50:#FDECEC;--paper:#FAF8F5;--card:#FFFFFF;
+    --border:#DDD7CF;--border-subtle:#ECE7E0;--fg-1:#181512;--fg-2:#3D3833;--fg-3:#6B645C;
+    --ok:#12B76A;--attn:#F79009;--chip:#F1ECE5;
+    --font-display:"Barlow Condensed","Oswald","Segoe UI Semibold",system-ui,sans-serif;
+    --font-mono:"Roboto Mono",ui-monospace,"Cascadia Code",Consolas,Menlo,monospace;
+    --radius-md:4px;--radius-lg:8px;--shadow:0 1px 2px rgba(11,9,8,.06),0 4px 8px -2px rgba(11,9,8,.06);--maxw:880px;}
+  *{box-sizing:border-box;}html,body{margin:0;padding:0;}
+  body{background:var(--paper);color:var(--fg-2);font-family:var(--font-mono);font-size:15px;line-height:1.6;-webkit-font-smoothing:antialiased;}
+  .wrap{max-width:var(--maxw);margin:0 auto;padding:0 28px 72px;}
+  .topbar{max-width:var(--maxw);margin:0 auto;padding:26px 28px 0;display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;}
+  .logo{display:inline-flex;align-items:center;gap:9px;}
+  .logo .flag{background:var(--red-500);color:#fff;font-family:var(--font-display);font-weight:800;font-size:17px;padding:3px 7px 2px;border-radius:2px;line-height:1;}
+  .logo .word{font-family:var(--font-display);font-weight:700;font-size:17px;letter-spacing:.14em;text-transform:uppercase;color:var(--fg-1);}
+  .doc-meta{font-size:11px;letter-spacing:.13em;text-transform:uppercase;color:var(--fg-3);text-align:right;}
+  .doc-meta .tag{color:var(--red-700);font-weight:700;}
+  .topdivide{max-width:var(--maxw);margin:16px auto 0;padding:0 28px;}.topdivide hr{border:0;border-top:2px solid var(--red-500);margin:0;}
+  .hero{padding:38px 0 4px;}
+  .eyebrow{font-size:11px;font-weight:700;letter-spacing:.26em;text-transform:uppercase;color:var(--red-700);margin:0 0 12px;}
+  h1{font-family:var(--font-display);font-weight:800;font-size:44px;line-height:1.03;text-transform:uppercase;color:var(--fg-1);margin:0 0 14px;}
+  .standfirst{font-size:16px;color:var(--fg-2);max-width:64ch;margin:0;}
+  .stats{display:flex;flex-wrap:wrap;gap:10px;margin-top:22px;}
+  .stat{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-md);padding:9px 15px;box-shadow:var(--shadow);}
+  .stat b{font-family:var(--font-display);font-weight:700;font-size:22px;color:var(--fg-1);display:block;line-height:1;margin-bottom:3px;}
+  .stat span{font-size:10px;letter-spacing:.13em;text-transform:uppercase;color:var(--fg-3);}
+  details{padding-top:34px;border:0;}details+details{border-top:1px solid var(--border-subtle);}
+  summary{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;cursor:pointer;list-style:none;padding-top:6px;}
+  summary::-webkit-details-marker{display:none;}summary .htext{flex:1;}
+  summary .chev{font-family:var(--font-mono);font-weight:700;font-size:20px;line-height:1;color:var(--red-500);margin-top:16px;transition:transform .18s ease;user-select:none;}
+  details[open] summary .chev{transform:rotate(90deg);}summary:hover h2{color:var(--red-700);}
+  .count{font-family:var(--font-mono);font-size:12px;font-weight:700;color:var(--red-700);background:var(--red-50);border-radius:20px;padding:2px 9px;margin-left:10px;vertical-align:middle;}
+  .secbody{padding-top:14px;}
+  .sec-eyebrow{font-size:11px;font-weight:700;letter-spacing:.22em;text-transform:uppercase;color:var(--red-700);margin:0 0 8px;display:flex;align-items:center;gap:10px;}
+  .sec-eyebrow::before{content:"";width:18px;height:2px;background:var(--red-500);display:inline-block;}
+  h2{font-family:var(--font-display);font-weight:700;font-size:26px;line-height:1.1;text-transform:uppercase;color:var(--fg-1);margin:0;transition:color .12s;}
+  h3{font-family:var(--font-mono);font-weight:700;font-size:13.5px;color:var(--fg-1);margin:0 0 6px;}
+  p{margin:0 0 12px;}p:last-child{margin-bottom:0;}strong{color:var(--fg-1);font-weight:700;}
+  code{font-family:var(--font-mono);background:var(--chip);padding:.1em .4em;border-radius:3px;font-size:.86em;color:var(--fg-1);}
+  .cards{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:18px 20px;box-shadow:var(--shadow);}
+  .card .tag{display:inline-flex;align-items:center;gap:8px;font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;margin-bottom:10px;}
+  .dot{width:9px;height:9px;border-radius:50%;display:inline-block;}.dot.ok{background:var(--ok);}.dot.attn{background:var(--attn);}
+  .card p{font-size:13.5px;margin:0;}
+  ul.clean{list-style:none;margin:0;padding:0;display:grid;gap:8px;}
+  ul.clean li{position:relative;padding-left:24px;font-size:13.5px;color:var(--fg-2);}
+  ul.clean li::before{content:"";position:absolute;left:3px;top:8px;width:7px;height:7px;background:var(--red-500);border-radius:1px;transform:rotate(45deg);}
+  ul.clean li strong{color:var(--fg-1);}
+  .nugget{background:var(--card);border:1px solid var(--border);border-left:3px solid var(--red-500);border-radius:var(--radius-md);padding:13px 16px;box-shadow:var(--shadow);}
+  .nugget h3{margin-bottom:5px;}.nugget p{font-size:12.5px;color:var(--fg-2);margin:0;}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+  pre{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:13px 16px;overflow-x:auto;font-size:12px;line-height:1.5;color:var(--fg-2);box-shadow:var(--shadow);margin:0 0 6px;}
+  pre code{background:none;padding:0;color:var(--fg-2);}
+  .resume .secbody{background:var(--fg-1);color:#EDE9E3;border-radius:var(--radius-lg);padding:20px 24px;margin-top:14px;}
+  .resume pre{background:#231e1a;border:1px solid #3a332d;color:#D9D2CA;font-size:12.5px;box-shadow:none;margin:0;}
+  .raw pre{max-height:520px;overflow:auto;font-size:11.5px;white-space:pre-wrap;word-break:break-word;}
+  .raw .hint{font-size:11px;color:var(--fg-3);margin:0 0 8px;}
+  footer{max-width:var(--maxw);margin:48px auto 0;padding:20px 28px 36px;border-top:1px solid var(--border);display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--fg-3);}
+  .controls{max-width:var(--maxw);margin:18px auto 0;padding:0 28px;text-align:right;}
+  .controls button{font-family:var(--font-mono);font-size:10.5px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--fg-3);background:none;border:1px solid var(--border);border-radius:20px;padding:5px 12px;cursor:pointer;}
+  .controls button:hover{color:var(--red-700);border-color:var(--red-500);}
+  @media (max-width:640px){h1{font-size:32px;}h2{font-size:22px;}.cards,.grid2{grid-template-columns:1fr;}}
+  @media print{:root{--paper:#fff;}body{background:#fff;font-size:11pt;}.card,.nugget,.stat,pre{box-shadow:none;}
+    .controls,summary .chev{display:none;}details>.secbody{display:block!important;}
+    details,.card,.nugget{page-break-inside:avoid;}*{-webkit-print-color-adjust:exact;print-color-adjust:exact;}}
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <span class="logo"><span class="flag">GPX</span><span class="word">Stream</span></span>
+    <span class="doc-meta"><span class="tag">Session Recap · Internal</span><br />RootEncoder · 2026-09-09</span>
+  </div>
+  <div class="topdivide"><hr /></div>
+  <div class="wrap">
+    <div class="hero">
+      <p class="eyebrow">Session Recap · 2026-09-09 11:41</p>
+      <h1>Upstream Merge Assessment</h1>
+      <p class="standfirst">Investigated whether pedroSG94/RootEncoder's latest upstream work is worth merging into <code>gpx-2.8</code>. The brief's numbers were stale — corrected the real gap, then Andy asked to proceed, so it's landed as R35.</p>
+      <div class="stats">
+        <div class="stat"><b>18</b><span>Commits merged</span></div>
+        <div class="stat"><b>0</b><span>Merge conflicts</span></div>
+        <div class="stat"><b>2</b><span>Files overlapping GPX</span></div>
+        <div class="stat"><b>Pushed</b><span>gpx-2.8 + master</span></div>
+      </div>
+    </div>
+    <div class="controls">
+      <button type="button" onclick="document.querySelectorAll('details').forEach(d=>d.open=true)">Expand all</button>
+      <button type="button" onclick="document.querySelectorAll('details').forEach(d=>d.open=false)">Collapse all</button>
+    </div>
+
+    <details open>
+      <summary><span class="htext"><span class="sec-eyebrow">Landed</span><h2>Merged As R35</h2></span><span class="chev">&rsaquo;</span></summary>
+      <div class="secbody">
+        <p>The 18 commits between <code>origin/master</code> (300d99fe1) and <code>upstream/master</code> (1285703b) merged cleanly into <code>gpx-2.8</code> with zero conflicts, including in the two files where GPX's own customizations live. Content is small and low-risk: two real bug fixes, one new opt-in feature, dependency bumps, and doc regeneration. Andy asked to proceed after the initial recommendation, so this session executed the full <code>upstream-sync</code> procedure: merged in a worktree, build-gated (<code>gradlew assembleDebug test</code> — green across every module), updated the branch-policy and reapply-plan docs, fast-forwarded <code>gpx-2.8</code> and <code>master</code>, and pushed both to <code>origin</code>. No tag or pin move — that stays a separate consumer-side decision.</p>
+      </div>
+    </details>
+
+    <details open>
+      <summary><span class="htext"><span class="sec-eyebrow">Correction</span><h2>The Task Brief Was Stale</h2></span><span class="chev">&rsaquo;</span></summary>
+      <div class="secbody">
+        <div class="cards">
+          <div class="card">
+            <span class="tag"><span class="dot attn"></span>What the brief said</span>
+            <p><code>master</code> is 107 commits behind <code>alexsafe/master</code>; <code>alexsafe</code> periodically absorbs pedroSG94 upstream PRs.</p>
+          </div>
+          <div class="card">
+            <span class="tag"><span class="dot ok"></span>What's actually true</span>
+            <p><code>alexsafe</code> has no <code>gpx-2.8</code> branch and its <code>master</code> is 226 commits <em>behind</em> — unrelated/stale. The real 107-commit gap was against <code>origin/master</code>, and it was already merged into <code>gpx-2.8</code> as R31 on 2026-08-19.</p>
+          </div>
+        </div>
+        <p style="margin-top:14px">Saved to project memory (<code>project_remotes_and_sync_state.md</code>) so this doesn't cause confusion again. The real, still-open gap is <code>origin/master..upstream/master</code> — 18 commits — which this recap assesses instead.</p>
+      </div>
+    </details>
+
+    <details>
+      <summary><span class="htext"><span class="sec-eyebrow">The delta</span><h2>What's In The 18 Commits</h2><span class="count">6 items</span></span><span class="chev">&rsaquo;</span></summary>
+      <div class="secbody">
+        <ul class="clean">
+          <li><strong>QueueAwareBitrateAdapter (new)</strong> — congestion-aware bitrate adaptation utility, not currently wired into GPX's library code; a consumer-side opt-in.</li>
+          <li><strong>Camera2 region-clear fix</strong> — replaced an invalid zero-size <code>MeteringRectangle</code> with a proper full-sensor "don't care" region for AWB/AE/AF clearing.</li>
+          <li><strong>BitrateManager.reset() fix</strong> — now resets its timestamp too, avoiding a bogus bitrate reading right after reconnect.</li>
+          <li><strong>StreamBase.kt teardown reorder</strong> — <code>glInterface.stop()</code> now runs after encoder <code>.stop()</code> calls, inside the function GPX's R30 lock wraps. Verified clean.</li>
+          <li><strong>Camera2Base custom-request hooks (new)</strong> — <code>setCustomRequest</code> / <code>setCustomOnCaptureCompletedCallback</code>, zero overlap with GPX.</li>
+          <li><strong>Noise</strong> — AGP/gradle-wrapper bumps, a 2.8.1 version bump, and regenerated Dokka docs.</li>
+        </ul>
+      </div>
+    </details>
+
+    <details>
+      <summary><span class="htext"><span class="sec-eyebrow">Risk check</span><h2>Conflict Test</h2></span><span class="chev">&rsaquo;</span></summary>
+      <div class="secbody">
+        <p>Worktree at <code>.claude/worktrees/upstream-merge-assessment</code>, branched off <code>origin/gpx-2.8</code> (the real active tip — <code>alexsafe/gpx-2.8</code> doesn't exist). Ran a no-commit test merge of <code>upstream/master</code>:</p>
+        <pre><code>Auto-merging encoder/.../Camera2ApiManager.kt
+Auto-merging library/.../StreamBase.kt
+Automatic merge went well; stopped before committing as requested</code></pre>
+        <p>Manually checked the merged <code>stopSourcesImp()</code> — GPX's R30 synchronized wrapper and comments survived intact, only the reorder landed. Aborted the merge, confirmed zero unique commits, removed the worktree and branch. Main checkout (<code>gpx-2.8</code>) was never touched.</p>
+      </div>
+    </details>
+
+    <details class="raw">
+      <summary><span class="htext"><span class="sec-eyebrow">For the record</span><h2>Full Record + AI Notes</h2></span><span class="chev">&rsaquo;</span></summary>
+      <div class="secbody">
+        <p class="hint">Complete raw recap + Claude's scratch notes — the same canonical block the AI reads from the top of this file.</p>
+        <pre id="fullmd"></pre>
+      </div>
+    </details>
+  </div>
+  <footer><span>GPX Stream · Session Recap · 2026-09-09 11:41</span><span>Internal — RootEncoder</span></footer>
+  <script>document.getElementById('fullmd').textContent=document.getElementById('recap').textContent.trim();</script>
+</body>
+</html>
