@@ -59,6 +59,9 @@ import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicLong
 import javax.net.ssl.TrustManager
 import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
+
+private val SENDER_STOP_TIMEOUT = 1.seconds
 
 /**
  * Created by pedro on 8/04/21.
@@ -566,7 +569,16 @@ class RtmpClient(private val connectChecker: ConnectChecker) {
   }
 
   private suspend fun disconnect(clear: Boolean) {
-    if (isStreaming) rtmpSender.stop(clear)
+    if (isStreaming) {
+      //the sender can be blocked in a socket write (TCP backpressure) that ignores cancellation,
+      //only closing the socket unblocks it. Try a cooperative stop first to keep the graceful close.
+      val stopped = withTimeoutOrNull(SENDER_STOP_TIMEOUT) { rtmpSender.stop(clear) } != null
+      if (!stopped) {
+        Log.w(TAG, "sender blocked in socket write, closing socket to unblock it")
+        runCatching { socket?.close() }
+        rtmpSender.stop(clear)
+      }
+    }
     runCatching {
       withTimeoutOrNull(100.milliseconds) {
         socket?.let { commandsManager.sendClose(it) }
