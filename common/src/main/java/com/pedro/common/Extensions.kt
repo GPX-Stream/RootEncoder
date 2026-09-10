@@ -118,7 +118,8 @@ suspend fun onMainThread(code: () -> Unit) {
 }
 
 fun onMainThreadHandler(code: () -> Unit) {
-  Handler(Looper.getMainLooper()).post(code)
+  val looper = Looper.getMainLooper()
+  if (looper == null) code() else Handler(looper).post(code)
 }
 
 fun ByteArray.bytesToHex(): String {

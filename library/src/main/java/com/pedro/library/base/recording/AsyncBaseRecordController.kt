@@ -31,6 +31,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
@@ -230,6 +231,7 @@ abstract class AsyncBaseRecordController : RecordController {
       val channel = muxerChannel ?: return@launch
       for (frame in channel) {
         try {
+          if (!isActive) break
           onWriteFrame(frame)
         } finally {
           bufferPool.release(frame.data)
@@ -257,6 +259,10 @@ abstract class AsyncBaseRecordController : RecordController {
     // too. On timeout the job is abandoned (its scope is Dispatchers.IO, so a straggler frees
     // itself when the stuck write eventually errors or the process ends); the stalled file is lost
     // regardless, and the caller — the engine thread, on release() — survives.
+    //
+    // GPX patch — upstream's own fix for this same join (commit 9a0cd3305) uses a 1000ms bound;
+    // kept at R29's already-authorized and bench-verified 3000ms rather than silently narrowing
+    // it. See .claude/upstream-sync-2026-09-13-analysis.md, item 4.
     runBlocking { withTimeoutOrNull(STOP_JOIN_TIMEOUT_MS) { muxerJob?.join() } }
     bufferPool.clear()
     recordStatus = RecordController.Status.STOPPED
