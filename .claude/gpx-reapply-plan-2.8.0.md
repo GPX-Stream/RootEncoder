@@ -374,6 +374,37 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       #253) produced ~49,000 failed attempts in 71 minutes — one leaked thread each,
       exhausting the process until a hardware reboot recovered it. Neither gap is fixed
       upstream as of `pedro/master` @ `1285703b` (R35).
+
+      **Adversarial review follow-up (Fable, same day), also landed on this branch:**
+      `openCameraId`'s `HandlerThread` has a *third* leak path this PR's first commit
+      missed — it is only quit via `onClosed`, which never fires if
+      `cameraManager.openCamera()` itself throws before the framework registers any
+      callback (an id the camera service no longer knows, most often an input that was
+      just unplugged — `GpxCameraSource.kt` documents exactly this throw). Fixed by
+      wrapping only that call so a synchronous throw quits the looper before
+      propagating, scoped narrowly so a later throw from `getCameraCharacteristics`
+      (after a genuinely successful open) does not drop that live device's own
+      callbacks. Also hardened the `onConfigured` catch's `it.close()` against `close()`
+      itself throwing (never-crash) and cleared the stale `cameraCaptureSession`
+      reference it would otherwise leave behind; named the shared executor's thread via
+      a `ThreadFactory` (the field incident's own thread dump was 49,000
+      identically-named `pool-N-thread-1` entries).
+
+      **Known gap, not built here — completing R23's generation guard onto session
+      callbacks.** The same review found the shared executor (this PR's first commit)
+      widens a pre-existing race: `CameraCaptureSession.StateCallback` (`onConfigured`/
+      `onConfigureFailed`) has no generation guard the way `CameraDevice.StateCallback`
+      does (R23). A late `onConfigured` for a session whose device has already been
+      superseded can call `reOpenCamera`, which closes whatever camera is *currently*
+      held — and because every session's callbacks now serialize on one thread instead
+      of each getting its own, a stale callback can sit behind a live one for the whole
+      3 s `openTimeoutMs` bound instead of firing within scheduler jitter, in principle
+      chaining into a self-sustaining open/close loop. Reviewed as not a blocker for this
+      PR — it needs `onAskedFor`-style manual camera switching racing a `setRepeatingRequest`
+      failure to trigger, which the current consumer's call shape does not exercise —
+      but it is a real structural gap. Fix direction: capture `generation` in `onOpened`,
+      thread it through `startPreview` into `createCaptureSession`'s two callbacks, and
+      guard both the same way `onOpened`/`onDisconnected`/`onError` already do.
 - [x] R24 — Tag `2.8.0-gpx2` and bump the pin in `gpxstream-app`. **Done 2026-08-12**: the tag
       was cut at `a88f8d58f` (R28 included) with the consumer's pin move (gpxstream-app #46) for
       the S8 tier flip, superseding the 2026-08-03 hold; `2.8.0-gpx3` followed 2026-08-13 with
