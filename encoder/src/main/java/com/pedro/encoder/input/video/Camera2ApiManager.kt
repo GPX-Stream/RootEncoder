@@ -130,15 +130,17 @@ class Camera2ApiManager(context: Context) {
 
     /**
      * GPX R36 — one callback executor for this manager's whole life, not one per
-     * [createCaptureSession] call. `SessionConfiguration`'s executor backs a real, permanently
-     * running thread that nothing here ever shut down, so a camera that fails and reopens
-     * repeatedly (a stale/abandoned target `Surface`, a flapping input) leaked one live thread
-     * per attempt — thousands of them in an hour-long retry storm, exhausting the process with
-     * no crash and no log line naming the cause. A single reused executor still serializes each
-     * session's own callbacks (the guarantee `SessionConfiguration` asks for), it just does so
-     * for every attempt this manager ever makes instead of a fresh one each time.
+     * [createCaptureSession] call. `SessionConfiguration` accepts any `Executor`, but a real,
+     * permanently running thread backs whichever one it is given, and nothing here ever shut it
+     * down — so a camera that fails and reopens repeatedly (a stale/abandoned target `Surface`,
+     * a flapping input) leaked one live thread per attempt. Thousands of identically-named
+     * `pool-N-thread-1` threads piled up in an hour-long field incident with no log line naming
+     * the cause; the named factory here is so the next `ps -T` dump is self-explanatory. A single
+     * reused executor still serializes this manager's own session callbacks, the same as a fresh
+     * one per attempt did, just across every attempt instead of within one.
      */
-    private val captureSessionExecutor = Executors.newSingleThreadExecutor()
+    private val captureSessionExecutor =
+        Executors.newSingleThreadExecutor { runnable -> Thread(runnable, "$TAG CaptureSession") }
     private var cameraCallbacks: CameraCallbacks? = null
     private var requiredSize: Size? = null
     var dynamicFps = false
@@ -217,8 +219,20 @@ class Camera2ApiManager(context: Context) {
                         // start; nothing else on this path was going to close it, unlike the
                         // sibling onConfiguredFailed below. Left open, the next retry's
                         // createCaptureSession call could still be racing this session's own
-                        // teardown against the platform.
-                        it.close()
+                        // teardown against the platform. Guarded, not a bare call: close() is a
+                        // framework call inside a callback already handling a fault, and letting
+                        // it throw here would crash the process over the same failure this catch
+                        // exists to survive. Cleared back to null after — every other reader
+                        // (applyRequest, tapToFocus, enableAutoFocus/WhiteBalanceLock) already
+                        // treats a null session as "nothing to act on", so a closed one left
+                        // behind here would just be logging IllegalStateExceptions until the next
+                        // open, not misbehaving — but there is no reason to leave that trap set.
+                        try {
+                            it.close()
+                        } catch (closeFault: Exception) {
+                            Log.e(TAG, "failed to close the session that failed to start", closeFault)
+                        }
+                        if (cameraCaptureSession === it) cameraCaptureSession = null
                         cameraCallbacks?.onCameraError("Create capture session failed: " + e.message)
                         Log.e(TAG, "Error", e)
                     }
@@ -978,7 +992,17 @@ class Camera2ApiManager(context: Context) {
             cameraHandlerThread.start()
             val handler = Handler(cameraHandlerThread.looper)
             try {
-                cameraManager.openCamera(cameraId, object: CameraDevice.StateCallback() {
+                // GPX R36 — this specific call, not the wider try block below, is wrapped so a
+                // synchronous throw here can quit cameraHandlerThread's looper before propagating.
+                // openCamera can throw before the framework ever registers the callback below (an
+                // id the camera service no longer knows, most often an input that was just
+                // unplugged) — nothing will ever call onClosed to quit this attempt's handler
+                // thread otherwise, and it is left running forever. Scoped to just this call:
+                // getCameraCharacteristics further down can also throw, after a genuinely
+                // successful open, and quitting there would drop that live device's own later
+                // callbacks.
+                try {
+                    cameraManager.openCamera(cameraId, object: CameraDevice.StateCallback() {
                     override fun onOpened(cameraDevice: CameraDevice) {
                         if (openGeneration.get() != generation) {
                             // GPX R23 — given up on, and now open regardless. Closing it here
@@ -1029,6 +1053,10 @@ class Camera2ApiManager(context: Context) {
                     }
 
                 }, handler)
+                } catch (e: Exception) {
+                    cameraHandlerThread.looper.quitSafely()
+                    throw e
+                }
                 // GPX R23 — a bounded wait in place of `semaphore.acquireUninterruptibly()`, which
                 // had no time limit: a camera that never reported itself open parked this thread
                 // for good, freezing the app on a switch with no way back.
