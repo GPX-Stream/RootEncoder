@@ -359,6 +359,21 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       the merge carries a marker, except two pre-existing R33 test files
       (`TransportPrimerTest.kt`, `TransportConstructionTest.kt`) that predate this sync and
       have no upstream code to mark against.
+- [x] R36 — `Camera2ApiManager.kt`: stop leaking a thread per failed camera-session attempt
+      (`gpxstream-app` issue #253). `createCaptureSession()` created a brand-new
+      `Executors.newSingleThreadExecutor()` on every call and never shut it down, on any
+      path — a `SessionConfiguration` executor backs a real, permanently running thread.
+      Replaced with one executor reused for the manager's whole life
+      (`captureSessionExecutor`), still serializing each session's own callbacks the same
+      way. Separately, `startPreview()`'s `onConfigured` callback closed nothing when
+      `setRepeatingRequest` threw (the observed field failure: `setRepeatingRequest` throwing
+      "Surface was abandoned" against a stale target surface) — unlike the sibling
+      `onConfiguredFailed` a few lines below, which already calls `it.close()`. Added the
+      matching close. Traced from a field incident (device 74762): one stale preview
+      surface + gpxstream-app's own unthrottled camera-open retry (fixed separately in
+      #253) produced ~49,000 failed attempts in 71 minutes — one leaked thread each,
+      exhausting the process until a hardware reboot recovered it. Neither gap is fixed
+      upstream as of `pedro/master` @ `1285703b` (R35).
 - [x] R24 — Tag `2.8.0-gpx2` and bump the pin in `gpxstream-app`. **Done 2026-08-12**: the tag
       was cut at `a88f8d58f` (R28 included) with the consumer's pin move (gpxstream-app #46) for
       the S8 tier flip, superseding the 2026-08-03 hold; `2.8.0-gpx3` followed 2026-08-13 with

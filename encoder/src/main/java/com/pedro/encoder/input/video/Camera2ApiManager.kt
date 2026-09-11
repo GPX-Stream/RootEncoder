@@ -127,6 +127,18 @@ class Camera2ApiManager(context: Context) {
      * stopped answering, not a latency budget a healthy open comes anywhere near.
      */
     private val openTimeoutMs = 3_000L
+
+    /**
+     * GPX R36 — one callback executor for this manager's whole life, not one per
+     * [createCaptureSession] call. `SessionConfiguration`'s executor backs a real, permanently
+     * running thread that nothing here ever shut down, so a camera that fails and reopens
+     * repeatedly (a stale/abandoned target `Surface`, a flapping input) leaked one live thread
+     * per attempt — thousands of them in an hour-long retry storm, exhausting the process with
+     * no crash and no log line naming the cause. A single reused executor still serializes each
+     * session's own callbacks (the guarantee `SessionConfiguration` asks for), it just does so
+     * for every attempt this manager ever makes instead of a fresh one each time.
+     */
+    private val captureSessionExecutor = Executors.newSingleThreadExecutor()
     private var cameraCallbacks: CameraCallbacks? = null
     private var requiredSize: Size? = null
     var dynamicFps = false
@@ -201,6 +213,12 @@ class Camera2ApiManager(context: Context) {
                     } catch (_: IllegalStateException) {
                         reOpenCamera(cameraId)
                     } catch (e: Exception) {
+                        // GPX R36 — this session just configured successfully, then failed to
+                        // start; nothing else on this path was going to close it, unlike the
+                        // sibling onConfiguredFailed below. Left open, the next retry's
+                        // createCaptureSession call could still be racing this session's own
+                        // teardown against the platform.
+                        it.close()
                         cameraCallbacks?.onCameraError("Create capture session failed: " + e.message)
                         Log.e(TAG, "Error", e)
                     }
@@ -1259,7 +1277,7 @@ class Camera2ApiManager(context: Context) {
             val config = SessionConfiguration(
                 SessionConfiguration.SESSION_REGULAR,
                 configurations,
-                Executors.newSingleThreadExecutor(),
+                captureSessionExecutor,
                 callback
             )
             cameraDevice.createCaptureSession(config)
