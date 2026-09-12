@@ -251,7 +251,11 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       142 marker lines against 143, nothing silently dropped.
 - [x] R32 — Encoded-frame timing seam, ported from Anton's `teaky-frame-timing` branch
       (`52926292d`, authored on the frozen 2.7.5 line; the branch stays put, only the change
-      moves — authorized by Andy, 2026-08-19). Purely additive diagnostics:
+      moves — authorized by Andy, 2026-08-19). **Superseded 2026-09-12:** `gpxnative-ai` (the
+      2.7.5 line's only consumer) retired, and `teaky-frame-timing`/`gpx-master` were deleted —
+      see `.claude/gpx-branch-policy.md`'s "Retired lines". This entry's own port to `gpx-2.8`
+      is unaffected; only the source branch's continued existence is what changed. Purely
+      additive diagnostics:
       `StreamBase.setStreamVideoFrameTimingListener` observes each non-config encoded stream-video
       frame with its encoded PTS, its raw Surface/EGL timestamp, and the delivery instant
       (`StreamVideoFrameTiming`), so camera-to-encoded pipeline latency is measurable without wall

@@ -1,25 +1,39 @@
 # GPX fork branch and tag policy
 
-This fork carries two independent GPX lines. They are not interchangeable, and a consumer
-pinned to one cannot be moved to the other without code changes.
+This fork carries one active GPX line, `gpx-2.8`. It previously carried a second,
+`gpx-master`, retired 2026-09-12 when its only consumer, `gpxnative-ai`, was retired — see
+"Retired lines" below.
 
 ## Branches
 
 | Branch | Base | Purpose |
 |---|---|---|
 | `master` | — | Mirror of `pedroSG94/RootEncoder` master. Fast-forward only, never a GPX commit. |
-| `gpx-master` | upstream `49421b686` (2026-07-20) | Frozen. The line `gpxnative-ai` builds against. |
 | `gpx-2.8` | upstream `9a9ca124f` (2026-07-30) | Active. The line `gpxstream-app` builds against. Synced forward since; latest merged upstream is `1285703b` (R35, 2026-09-09). |
 
 ## Tags and who consumes them
 
 | Tag line | Head tag | Consumer |
 |---|---|---|
-| `2.7.5-gpx*` | `2.7.5-gpx25` | `gpxnative-ai` |
 | `2.8.0-gpx*` | `2.8.0-gpx3` | `gpxstream-app` |
 
 JitPack builds per tag, so a pin resolves the tagged commit regardless of what any branch
-does afterwards. Moving `gpx-2.8` cannot affect a consumer pinned to `2.7.5-gpx25`.
+does afterwards.
+
+## Retired lines
+
+- **`gpx-master`** (base upstream `49421b686`, 2026-07-20) and **`teaky-frame-timing`**
+  (`gpx-master` + one commit, `52926292d`, "encoded-frame timing callback for Teaky OBD/frame
+  correlation") — both deleted 2026-09-12. `gpxnative-ai`, the only consumer of either (its
+  `libs.versions.toml` pinned `52926292d` directly, `teaky-frame-timing`'s own tip, not a tag),
+  is retired and no longer built. `gpx-master`'s own fixes were already captured elsewhere
+  before deletion: the ones relevant to `gpx-2.8` were reapplied under their own R-numbers
+  (R10, R32); the rest (a VBR-log copy-paste bug and an `OpenGlView` photo-size bug, both
+  specific to the pre-`gpx-2.8` lineage) were never applicable to the active line. Deleting
+  both branches leaves `52926292d` unreachable from any ref in this repo — recoverable only
+  from `gpxnative-ai`'s own git history (or GitHub's reflog, for a limited window) if that
+  exact build is ever needed again.
+- **`2.7.5-gpx*`** (head `2.7.5-gpx25`) — the tag line `gpx-master` fed. No live consumer.
 
 ## Why the two lines cannot be swapped
 
@@ -67,10 +81,7 @@ legible without running it.
 
 ## Rules
 
-- **Do not add GPX commits to `gpx-master`.** It is frozen so `gpxnative-ai` keeps a stable
-  base. A fix that `gpxnative-ai` genuinely needs is a deliberate decision to unfreeze, made
-  with the owner, not a routine commit.
-- **New GPX work goes on `gpx-2.8`**, tagged `2.8.0-gpx<N>`. Each GPX change needs its own
+- **All GPX work goes on `gpx-2.8`**, tagged `2.8.0-gpx<N>`. Each GPX change needs its own
   reason and its own approval from the consumer side — "the fork is open anyway" is never one
   (the gpxstream-app fork-edit rule).
 - **Built as R28 — per-encoder re-prepare (authorized at the gpxstream-app S8 gate, F2, Andy
