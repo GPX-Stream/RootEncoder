@@ -19,7 +19,12 @@ import com.pedro.encoder.input.video.CameraHelper.Facing
 
 interface CameraCallbacks {
   fun onCameraChanged(facing: Facing)
-  fun onCameraError(error: String)
-  fun onCameraOpened()
-  fun onCameraDisconnected()
+  // GPX R38 — cameraId identifies which camera the callback is about: the manager's own
+  // cameraId field is reassigned as soon as a new open attempt starts, with no generation
+  // gate on that assignment, so a consumer reading it after the fact (there was no other way
+  // to know) could see a newer attempt's id than the one this callback is actually for. See
+  // gpxstream-app issue #253.
+  fun onCameraError(cameraId: String, error: String)
+  fun onCameraOpened(cameraId: String)
+  fun onCameraDisconnected(cameraId: String)
 }
