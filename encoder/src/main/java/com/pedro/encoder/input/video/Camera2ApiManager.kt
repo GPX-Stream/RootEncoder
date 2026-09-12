@@ -108,10 +108,12 @@ class Camera2ApiManager(context: Context) {
     private var fps = 30
 
     /**
-     * GPX R23 — names the open attempt this manager currently wants. Every state callback
-     * registered by [openCameraId] carries the generation it was registered under and speaks only
-     * while that is still the current one; giving up on an open, or closing the camera, moves it
-     * on.
+     * GPX R23 — names the open attempt this manager currently wants. A state callback registered
+     * under it carries the generation it was registered under and speaks only while that is still
+     * the current one; giving up on an open, or closing the camera, moves it on. [openCameraId]'s
+     * own `CameraDevice.StateCallback` guards on it directly; GPX R37 extends the same guard to
+     * the `CameraCaptureSession.StateCallback` registered downstream of it in
+     * [createCaptureSession].
      *
      * The framework keeps a state callback registered after the caller has stopped waiting for
      * it, so without this a success arriving late would assign [cameraDevice] and start a
@@ -191,7 +193,7 @@ class Camera2ApiManager(context: Context) {
         isPrepared = true
     }
 
-    private fun startPreview(cameraDevice: CameraDevice, handler: Handler) {
+    private fun startPreview(cameraDevice: CameraDevice, handler: Handler, generation: Long) {
         try {
             val surface = surfaceEncoder ?: run {
                 cameraCallbacks?.onCameraError("You need prepare camera before open it")
@@ -204,6 +206,7 @@ class Camera2ApiManager(context: Context) {
             createCaptureSession(
                 cameraDevice,
                 listSurfaces,
+                generation,
                 onConfigured = {
                     cameraCaptureSession = it
                     try {
@@ -1016,7 +1019,7 @@ class Camera2ApiManager(context: Context) {
                             return
                         }
                         this@Camera2ApiManager.cameraDevice = cameraDevice
-                        startPreview(cameraDevice, handler)
+                        startPreview(cameraDevice, handler, generation)
                         resolved.countDown()
                         cameraCallbacks?.onCameraOpened()
                         Log.i(TAG, "Camera opened")
@@ -1281,21 +1284,54 @@ class Camera2ApiManager(context: Context) {
         }
     }
 
+    /**
+     * GPX R37 — closes a [CameraCaptureSession] that belongs to an open attempt the manager has
+     * already moved past, in place of acting on it. Used by [createCaptureSession]'s state
+     * callback once it finds [openGeneration] has moved on from the generation it was registered
+     * under.
+     */
+    private fun closeStaleSession(session: CameraCaptureSession, reason: String) {
+        Log.i(TAG, "$reason; discarded")
+        try {
+            session.close()
+        } catch (closeFault: Exception) {
+            Log.e(TAG, "failed to close a stale capture session", closeFault)
+        }
+    }
+
     @Suppress("DEPRECATION")
     @RequiresApi(Build.VERSION_CODES.LOLLIPOP)
     private fun createCaptureSession(
         cameraDevice: CameraDevice,
         surfaces: List<Surface>,
+        generation: Long,
         onConfigured: (CameraCaptureSession) -> Unit,
         onConfiguredFailed: (CameraCaptureSession) -> Unit,
         handler: Handler?
     ) {
         val callback = object: CameraCaptureSession.StateCallback() {
             override fun onConfigured(cameraCaptureSession: CameraCaptureSession) {
+                // GPX R37 — completes R23's generation guard onto this callback. R36 made
+                // captureSessionExecutor one shared, permanent executor instead of one per
+                // attempt, so a stale session's onConfigured can now sit queued behind a live
+                // one's for the whole openTimeoutMs bound instead of firing within ordinary
+                // scheduler jitter — long enough to matter. Acting on it would run onConfigured,
+                // which assigns cameraCaptureSession and calls setRepeatingRequest (or, on that
+                // call throwing, reOpenCamera) against whatever camera the manager currently
+                // holds, not the one this session was built for.
+                if (openGeneration.get() != generation) {
+                    closeStaleSession(cameraCaptureSession, "Capture session configured after the attempt was abandoned")
+                    return
+                }
                 onConfigured(cameraCaptureSession)
             }
 
             override fun onConfigureFailed(cameraCaptureSession: CameraCaptureSession) {
+                // GPX R37 — as onConfigured: an abandoned attempt's failure reports to nobody.
+                if (openGeneration.get() != generation) {
+                    closeStaleSession(cameraCaptureSession, "Capture session configuration failed after the attempt was abandoned")
+                    return
+                }
                 onConfiguredFailed(cameraCaptureSession)
             }
         }

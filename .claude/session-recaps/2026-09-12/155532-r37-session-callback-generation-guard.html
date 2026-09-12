@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<script type="text/markdown" id="recap">
+# R37 — complete R23's generation guard onto session state callbacks
+
+**Outcome:** Built, build-verified, PR open. Not merged (out of scope for this chip — orchestrator's call). Not device-QA'd.
+
+## What this closes
+
+R36 (merged, PR #6) made `Camera2ApiManager`'s `createCaptureSession` executor shared across
+the manager's whole life instead of one-per-attempt, to fix a real thread leak. That PR's own
+adversarial review found this widened a pre-existing gap: `CameraCaptureSession.StateCallback`
+(`onConfigured`/`onConfigureFailed`) had no generation guard the way `CameraDevice.StateCallback`
+already does (R23). Because every session's callbacks now serialize on one shared thread instead
+of each getting its own, a stale session's callback (belonging to an open attempt the manager has
+already moved past) can sit queued behind a live one's for the whole 3s `openTimeoutMs` bound
+instead of firing within ordinary scheduler jitter. Acting on it — assigning `cameraCaptureSession`,
+calling `setRepeatingRequest`, or on that throwing, `reOpenCamera` — would act against whatever
+camera the manager currently holds, not the one the stale session was built for. In principle this
+chains into a self-sustaining open/close loop. The R36 PR recorded this as a known, deliberately
+unbuilt gap in `.claude/gpx-reapply-plan-2.8.0.md`, reasoning it needed a manual camera-switch
+racing a `setRepeatingRequest` failure to trigger — not exercised by the current consumer's call
+shape, so not a blocker for that PR, but a real structural gap worth closing separately.
+
+## What was built
+
+`Camera2ApiManager.kt`:
+
+- `openCameraId` already captures a `generation` (`openGeneration.incrementAndGet()`) and its
+  `CameraDevice.StateCallback` already checks `openGeneration.get() != generation` before acting
+  (R23). That `generation` is now threaded through `startPreview(cameraDevice, handler, generation)`
+  into `createCaptureSession(cameraDevice, surfaces, generation, ...)`.
+- `createCaptureSession`'s own `CameraCaptureSession.StateCallback.onConfigured`/`onConfigureFailed`
+  now check `openGeneration.get() != generation` the same way, and on a mismatch call a new
+  `closeStaleSession(session, reason)` helper (logs + closes, guarded against `close()` itself
+  throwing) instead of invoking the passed-in `onConfigured`/`onConfiguredFailed` lambda — so a
+  stale session never touches `cameraCaptureSession`, never calls `setRepeatingRequest`, and never
+  triggers `reOpenCamera`.
+- Updated the `openGeneration` field's own KDoc to note it now guards both the device callback and
+  (via R37) the session callback.
+
+Confirmed R37 is the next unused R-number by grepping `.claude/gpx-reapply-plan-2.8.0.md` for the
+highest `R<N>` in use (R36) before assuming it.
+
+## Test strategy — matched to precedent, didn't force one
+
+Checked whether this needed a dedicated unit test. `Camera2ApiManager.kt` has zero existing unit
+tests of any kind — R23's own generation guard (the pattern this extends) has never had one either,
+because the race needs the real Camera2 framework's own callback timing to trigger, not something a
+mock can meaningfully reproduce. R29 and R30 (the fork's other concurrency-race fixes) followed the
+same precedent: build-verified only, no dedicated test. Did the same here rather than writing a test
+that would just assert the guard logic in isolation with no real race behind it.
+
+## Verification
+
+`./gradlew assembleDebug test` — green across every module and the sample app. No ktlint/detekt
+configured in this repo (that's a `gpxstream-app` convention, not this fork's). Not device-QA'd:
+needs the same manual-camera-switch-racing-a-`setRepeatingRequest`-failure trigger the R36 review
+named as the reason this wasn't built inline; nothing exercising the fork today produces that
+condition on demand.
+
+## Docs updated
+
+`.claude/gpx-reapply-plan-2.8.0.md`: the R36 entry's "Known gap, not built here" note now says
+"**Closed by R37, below.**", and a new R37 checklist entry was added right after it (matching the
+file's existing pattern of appending follow-up entries near their originating item rather than by
+strict numeric order — R24, a tagging follow-up, is already placed after R36 for the same reason).
+
+`.claude/gpx-branch-policy.md` was checked and does not mention this gap or R36's details at all,
+so there was nothing stale there to fix.
+
+## Branch / PR
+
+- Branch: `gpx-r37-session-callback-generation-guard`, off `origin/gpx-2.8` (this repo has no
+  worktree convention — checked `.claude/gpx-branch-policy.md` and recent branch names first).
+- PR: https://github.com/GPX-Stream/RootEncoder/pull/7 (base `gpx-2.8`), commit `ea71d701c`.
+- **Not merged** — explicitly out of scope for this chip. Reporting open and verified per the
+  spawn instructions; the orchestrator decides when/whether to merge and separately handles moving
+  `gpxstream-app`'s RootEncoder pin.
+- One `gh` gotcha hit along the way: this repo has three remotes (`origin` = GPX-Stream,
+  `upstream` = pedroSG94, `alexsafe`), and `gh repo view` defaults to `pedroSG94/RootEncoder` —
+  `gh pr create` without `--repo GPX-Stream/RootEncoder` failed with a confusing "Base sha can't
+  be blank" error because it was resolving against the wrong fork entirely. Passing
+  `--repo GPX-Stream/RootEncoder` explicitly fixed it.
+
+## Open items
+
+- [ ] PR #7 review/merge — orchestrator's call, not this chip's.
+- [ ] Device QA of R37 specifically (and R36 alongside it, per the existing `2.8.0-gpx*` bench-gate
+      note) — no reliable way to force the triggering race on demand yet, same as R23/R29/R30's
+      standing watch-item status.
+- [ ] `gpxstream-app`'s RootEncoder pin move — separate, cross-repo decision, explicitly out of
+      scope for this chip.
+
+## AI notes (scratch — optional, written by Claude for future sessions)
+
+None — the task instructions and existing repo conventions (branch policy doc, reapply plan
+house style, R23/R29/R30 test precedent) were specific enough that no real ambiguity came up
+worth flagging for next time.
+</script>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>R37 Session-Callback Guard — 2026-09-12 15:55</title>
+<style>
+  :root{--red-500:#EF3340;--red-700:#B3242B;--red-50:#FDECEC;--paper:#FAF8F5;--card:#FFFFFF;
+    --border:#DDD7CF;--border-subtle:#ECE7E0;--fg-1:#181512;--fg-2:#3D3833;--fg-3:#6B645C;
+    --ok:#12B76A;--attn:#F79009;--chip:#F1ECE5;
+    --font-display:"Barlow Condensed","Oswald","Segoe UI Semibold",system-ui,sans-serif;
+    --font-mono:"Roboto Mono",ui-monospace,"Cascadia Code",Consolas,Menlo,monospace;
+    --radius-md:4px;--radius-lg:8px;--shadow:0 1px 2px rgba(11,9,8,.06),0 4px 8px -2px rgba(11,9,8,.06);--maxw:880px;}
+  *{box-sizing:border-box;}html,body{margin:0;padding:0;}
+  body{background:var(--paper);color:var(--fg-2);font-family:var(--font-mono);font-size:15px;line-height:1.6;-webkit-font-smoothing:antialiased;}
+  .wrap{max-width:var(--maxw);margin:0 auto;padding:0 28px 72px;}
+  .topbar{max-width:var(--maxw);margin:0 auto;padding:26px 28px 0;display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;}
+  .logo{display:inline-flex;align-items:center;gap:9px;}
+  .logo .flag{background:var(--red-500);color:#fff;font-family:var(--font-display);font-weight:800;font-size:17px;padding:3px 7px 2px;border-radius:2px;line-height:1;}
+  .logo .word{font-family:var(--font-display);font-weight:700;font-size:17px;letter-spacing:.14em;text-transform:uppercase;color:var(--fg-1);}
+  .doc-meta{font-size:11px;letter-spacing:.13em;text-transform:uppercase;color:var(--fg-3);text-align:right;}
+  .doc-meta .tag{color:var(--red-700);font-weight:700;}
+  .topdivide{max-width:var(--maxw);margin:16px auto 0;padding:0 28px;}.topdivide hr{border:0;border-top:2px solid var(--red-500);margin:0;}
+  .hero{padding:38px 0 4px;}
+  .eyebrow{font-size:11px;font-weight:700;letter-spacing:.26em;text-transform:uppercase;color:var(--red-700);margin:0 0 12px;}
+  h1{font-family:var(--font-display);font-weight:800;font-size:42px;line-height:1.05;text-transform:uppercase;color:var(--fg-1);margin:0 0 14px;}
+  .standfirst{font-size:16px;color:var(--fg-2);max-width:64ch;margin:0;}
+  .stats{display:flex;flex-wrap:wrap;gap:10px;margin-top:22px;}
+  .stat{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-md);padding:9px 15px;box-shadow:var(--shadow);}
+  .stat b{font-family:var(--font-display);font-weight:700;font-size:22px;color:var(--fg-1);display:block;line-height:1;margin-bottom:3px;}
+  .stat span{font-size:10px;letter-spacing:.13em;text-transform:uppercase;color:var(--fg-3);}
+  details{padding-top:34px;border:0;}details+details{border-top:1px solid var(--border-subtle);}
+  summary{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;cursor:pointer;list-style:none;padding-top:6px;}
+  summary::-webkit-details-marker{display:none;}summary .htext{flex:1;}
+  summary .chev{font-family:var(--font-mono);font-weight:700;font-size:20px;line-height:1;color:var(--red-500);margin-top:16px;transition:transform .18s ease;user-select:none;}
+  details[open] summary .chev{transform:rotate(90deg);}summary:hover h2{color:var(--red-700);}
+  .count{font-family:var(--font-mono);font-size:12px;font-weight:700;color:var(--red-700);background:var(--red-50);border-radius:20px;padding:2px 9px;margin-left:10px;vertical-align:middle;}
+  .secbody{padding-top:14px;}
+  .sec-eyebrow{font-size:11px;font-weight:700;letter-spacing:.22em;text-transform:uppercase;color:var(--red-700);margin:0 0 8px;display:flex;align-items:center;gap:10px;}
+  .sec-eyebrow::before{content:"";width:18px;height:2px;background:var(--red-500);display:inline-block;}
+  h2{font-family:var(--font-display);font-weight:700;font-size:26px;line-height:1.1;text-transform:uppercase;color:var(--fg-1);margin:0;transition:color .12s;}
+  h3{font-family:var(--font-mono);font-weight:700;font-size:13.5px;color:var(--fg-1);margin:0 0 6px;}
+  p{margin:0 0 12px;}p:last-child{margin-bottom:0;}strong{color:var(--fg-1);font-weight:700;}
+  code{font-family:var(--font-mono);background:var(--chip);padding:.1em .4em;border-radius:3px;font-size:.86em;color:var(--fg-1);}
+  .cards{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:18px 20px;box-shadow:var(--shadow);}
+  .card .tag{display:inline-flex;align-items:center;gap:8px;font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;margin-bottom:10px;}
+  .dot{width:9px;height:9px;border-radius:50%;display:inline-block;}.dot.ok{background:var(--ok);}.dot.attn{background:var(--attn);}
+  .card p{font-size:13.5px;margin:0;}
+  .commit{display:grid;grid-template-columns:84px 1fr;gap:14px;align-items:baseline;padding:9px 0;border-bottom:1px solid var(--border-subtle);}
+  .commit:last-child{border-bottom:0;}
+  .commit .hash{background:var(--fg-1);color:#fff;font-size:11.5px;padding:3px 0;border-radius:3px;text-align:center;letter-spacing:.02em;}
+  .commit .msg{font-size:13.5px;color:var(--fg-2);}.commit .msg strong{color:var(--fg-1);}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+  .nugget{background:var(--card);border:1px solid var(--border);border-left:3px solid var(--red-500);border-radius:var(--radius-md);padding:13px 16px;box-shadow:var(--shadow);}
+  .nugget h3{margin-bottom:5px;}.nugget p{font-size:12.5px;color:var(--fg-2);margin:0;}
+  ul.clean{list-style:none;margin:0;padding:0;display:grid;gap:8px;}
+  ul.clean li{position:relative;padding-left:24px;font-size:13.5px;color:var(--fg-2);}
+  ul.clean li::before{content:"";position:absolute;left:3px;top:8px;width:7px;height:7px;background:var(--red-500);border-radius:1px;transform:rotate(45deg);}
+  ul.clean li strong{color:var(--fg-1);}
+  .check{list-style:none;margin:0;padding:0;display:grid;gap:11px;}
+  .check li{position:relative;padding-left:28px;font-size:13.5px;color:var(--fg-2);}
+  .check li::before{content:"";position:absolute;left:0;top:2px;width:15px;height:15px;border:2px solid var(--attn);border-radius:3px;}
+  .check li strong{color:var(--fg-1);}
+  pre{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:13px 16px;overflow-x:auto;font-size:12px;line-height:1.5;color:var(--fg-2);box-shadow:var(--shadow);margin:0 0 6px;}
+  pre code{background:none;padding:0;color:var(--fg-2);}
+  .resume .secbody{background:var(--fg-1);color:#EDE9E3;border-radius:var(--radius-lg);padding:20px 24px;margin-top:14px;}
+  .resume pre{background:#231e1a;border:1px solid #3a332d;color:#D9D2CA;font-size:12.5px;box-shadow:none;margin:0;}
+  .raw pre{max-height:520px;overflow:auto;font-size:11.5px;white-space:pre-wrap;word-break:break-word;}
+  .raw .hint{font-size:11px;color:var(--fg-3);margin:0 0 8px;}
+  footer{max-width:var(--maxw);margin:48px auto 0;padding:20px 28px 36px;border-top:1px solid var(--border);display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--fg-3);}
+  .controls{max-width:var(--maxw);margin:18px auto 0;padding:0 28px;text-align:right;}
+  .controls button{font-family:var(--font-mono);font-size:10.5px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--fg-3);background:none;border:1px solid var(--border);border-radius:20px;padding:5px 12px;cursor:pointer;}
+  .controls button:hover{color:var(--red-700);border-color:var(--red-500);}
+  @media (max-width:640px){h1{font-size:32px;}h2{font-size:22px;}.cards,.grid2{grid-template-columns:1fr;}.commit{grid-template-columns:72px 1fr;}}
+  @media print{:root{--paper:#fff;}body{background:#fff;font-size:11pt;}.card,.nugget,.stat,pre{box-shadow:none;}
+    .controls,summary .chev{display:none;}details>.secbody{display:block!important;}
+    details,.card,.nugget,.commit{page-break-inside:avoid;}*{-webkit-print-color-adjust:exact;print-color-adjust:exact;}}
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <span class="logo"><span class="flag">GPX</span><span class="word">Stream</span></span>
+    <span class="doc-meta"><span class="tag">Session Recap · Internal</span><br />RootEncoder · 2026-09-12</span>
+  </div>
+  <div class="topdivide"><hr /></div>
+  <div class="wrap">
+    <div class="hero">
+      <p class="eyebrow">Session Recap · 2026-09-12 15:55</p>
+      <h1>R37 — Session-Callback Generation Guard</h1>
+      <p class="standfirst">Closed the deliberately-deferred R36 gap: a stale <code>CameraCaptureSession</code> callback can no longer act on a camera the manager has already moved past. Built, build-verified, PR open — merge and device QA are the orchestrator's call.</p>
+      <div class="stats">
+        <div class="stat"><b>R37</b><span>New fork item</span></div>
+        <div class="stat"><b>2</b><span>Files changed</span></div>
+        <div class="stat"><b>PR #7</b><span>Open, unmerged</span></div>
+        <div class="stat"><b>Green</b><span>assembleDebug + test</span></div>
+      </div>
+    </div>
+    <div class="controls">
+      <button type="button" onclick="document.querySelectorAll('details').forEach(d=>d.open=true)">Expand all</button>
+      <button type="button" onclick="document.querySelectorAll('details').forEach(d=>d.open=false)">Collapse all</button>
+    </div>
+
+    <details open>
+      <summary><span class="htext"><span class="sec-eyebrow">Status</span><h2>What happened</h2></span><span class="chev">&rsaquo;</span></summary>
+      <div class="secbody cards">
+        <div class="card">
+          <span class="tag"><span class="dot ok"></span>Closed</span>
+          <p>R36's own adversarial review found and recorded a gap: session-state callbacks had no generation guard. This session built the guard, following the exact shape R23 already established for device-state callbacks.</p>
+        </div>
+        <div class="card">
+          <span class="tag"><span class="dot attn"></span>Still open</span>
+          <p>PR #7 is unmerged (out of scope for this chip). Device QA needs a trigger nothing exercises today. <code>gpxstream-app</code>'s pin move is a separate, later decision.</p>
+        </div>
+      </div>
+    </details>
+
+    <details open>
+      <summary><span class="htext"><span class="sec-eyebrow">Resume</span><h2>Next steps</h2></span><span class="chev">&rsaquo;</span></summary>
+      <div class="secbody resume">
+        <pre>Review and, if satisfied, merge github.com/GPX-Stream/RootEncoder PR #7
+(gpx-r37-session-callback-generation-guard -&gt; gpx-2.8).
+Device QA of R37 (and R36) needs a manual camera-switch racing a
+setRepeatingRequest failure -- no on-demand trigger exists yet.
+gpxstream-app's RootEncoder pin move onto this line is a separate decision.</pre>
+      </div>
+    </details>
+
+    <details>
+      <summary><span class="htext"><span class="sec-eyebrow">Reference</span><h2>What changed<span class="count">2 files</span></h2></span><span class="chev">&rsaquo;</span></summary>
+      <div class="secbody">
+        <div class="timeline">
+          <div class="commit"><span class="hash">ea71d70</span><span class="msg"><strong>Camera2ApiManager.kt</strong> — threads <code>generation</code> through <code>startPreview</code>/<code>createCaptureSession</code>; guards <code>onConfigured</code>/<code>onConfigureFailed</code> against a stale generation via a new <code>closeStaleSession</code> helper.</span></div>
+          <div class="commit"><span class="hash">ea71d70</span><span class="msg"><strong>gpx-reapply-plan-2.8.0.md</strong> — R36's "Known gap" note now points to R37; new R37 checklist entry added.</span></div>
+        </div>
+      </div>
+    </details>
+
+    <details>
+      <summary><span class="htext"><span class="sec-eyebrow">Gotcha</span><h2>Along the way</h2></span><span class="chev">&rsaquo;</span></summary>
+      <div class="secbody grid2">
+        <div class="nugget">
+          <h3>gh defaults to the wrong fork</h3>
+          <p>This repo has three remotes (origin=GPX-Stream, upstream=pedroSG94, alexsafe). <code>gh pr create</code> without <code>--repo GPX-Stream/RootEncoder</code> silently targeted pedroSG94's repo and failed with a misleading "Base sha can't be blank" error.</p>
+        </div>
+        <div class="nugget">
+          <h3>No unit test, and that's correct here</h3>
+          <p>Camera2ApiManager.kt has zero unit tests; R23/R29/R30 all skip dedicated tests for the same reason — these races need real Camera2 framework timing. Matched precedent instead of forcing one.</p>
+        </div>
+      </div>
+    </details>
+
+    <details class="raw">
+      <summary><span class="htext"><span class="sec-eyebrow">For the record</span><h2>Full Record + AI Notes</h2></span><span class="chev">&rsaquo;</span></summary>
+      <div class="secbody">
+        <p class="hint">Complete raw recap + Claude's scratch notes — the same canonical block the AI reads from the top of this file.</p>
+        <pre id="fullmd"></pre>
+      </div>
+    </details>
+  </div>
+  <footer><span>GPX Stream · Session Recap · 2026-09-12 15:55</span><span>Internal — RootEncoder</span></footer>
+  <script>document.getElementById('fullmd').textContent=document.getElementById('recap').textContent.trim();</script>
+</body>
+</html>

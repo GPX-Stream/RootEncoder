@@ -402,9 +402,22 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       chaining into a self-sustaining open/close loop. Reviewed as not a blocker for this
       PR — it needs `onAskedFor`-style manual camera switching racing a `setRepeatingRequest`
       failure to trigger, which the current consumer's call shape does not exercise —
-      but it is a real structural gap. Fix direction: capture `generation` in `onOpened`,
-      thread it through `startPreview` into `createCaptureSession`'s two callbacks, and
-      guard both the same way `onOpened`/`onDisconnected`/`onError` already do.
+      but it is a real structural gap. **Closed by R37, below.**
+- [x] R37 — completes R23's generation guard onto `CameraCaptureSession.StateCallback`
+      (the gap R36's adversarial review found and left open, above). `openCameraId` already
+      captures `generation` and its `CameraDevice.StateCallback` already checks
+      `openGeneration.get() != generation` before acting; `startPreview` and
+      `createCaptureSession` now take that same `generation` and their
+      `CameraCaptureSession.StateCallback`'s `onConfigured`/`onConfigureFailed` check it the
+      same way, closing a stale session (`closeStaleSession`, mirroring the framework-call-can-
+      throw guard `onConfigured`'s existing catch already uses) instead of assigning
+      `cameraCaptureSession` or calling `reOpenCamera`/`setRepeatingRequest` against whatever
+      camera the manager currently holds. Like R23, R29 and R30, this needs the real Camera2
+      framework's own callback timing to exercise the race, so it carries no dedicated unit
+      test — build-verified only (`gradlew assembleDebug test` across every module and the
+      sample app). Not device-QA'd: it needs the same manual-camera-switch-racing-a-
+      `setRepeatingRequest`-failure trigger R36's review named as the reason this wasn't built
+      inline, which nothing exercising the fork today produces on demand.
 - [x] R24 — Tag `2.8.0-gpx2` and bump the pin in `gpxstream-app`. **Done 2026-08-12**: the tag
       was cut at `a88f8d58f` (R28 included) with the consumer's pin move (gpxstream-app #46) for
       the S8 tier flip, superseding the 2026-08-03 hold; `2.8.0-gpx3` followed 2026-08-13 with
