@@ -439,6 +439,18 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       actual race needs the real Camera2 framework's own callback timing, so it carries no
       dedicated unit test. Not device-QA'd, for the same reason R37 wasn't: nothing
       exercising the fork today produces the race on demand.
+      **Follow-up caught during review (same PR):** `startPreview`'s own `cameraId` parameter
+      shadows the class's mutable `this.cameraId` field, so its two `catch (_:
+      IllegalStateException) { reOpenCamera(cameraId) }` blocks (the `setRepeatingRequest`
+      failure path — the exact "Surface was abandoned" mechanism from the field incident —
+      and the outer `createCaptureSession` failure path) now retry the attempt's own
+      captured camera rather than whatever is live. Correct for every other call site in this
+      change (reporting must name the attempt's actual camera), but a retry *action* on a
+      camera the app has already abandoned wastes a hardware cycle and can contend with
+      whatever the app currently wants — the same interference this file's generation guards
+      exist elsewhere to prevent, just in the retry direction instead of the reporting one.
+      Both sites now check `openGeneration.get() == generation` before retrying, so a stale
+      attempt quietly stops instead of reopening the wrong camera.
 - [x] R24 — Tag `2.8.0-gpx2` and bump the pin in `gpxstream-app`. **Done 2026-08-12**: the tag
       was cut at `a88f8d58f` (R28 included) with the consumer's pin move (gpxstream-app #46) for
       the S8 tier flip, superseding the 2026-08-03 hold; `2.8.0-gpx3` followed 2026-08-13 with

@@ -216,7 +216,15 @@ class Camera2ApiManager(context: Context) {
                             handler
                         )
                     } catch (_: IllegalStateException) {
-                        reOpenCamera(cameraId)
+                        // GPX R38 follow-up — cameraId here is the id *this* attempt was opened
+                        // for, captured in openCameraId's own closure, not a live re-read. A
+                        // newer attempt can already be under way by the time this synchronous
+                        // throw is handled (its own openCameraId call racing this one on a
+                        // different thread) — reopening this attempt's camera regardless would
+                        // waste a hardware cycle and contend with whatever the app actually wants
+                        // now, exactly the interference this generation check exists elsewhere in
+                        // this file to prevent. Only retry if this attempt is still the current one.
+                        if (openGeneration.get() == generation) reOpenCamera(cameraId)
                     } catch (e: Exception) {
                         // GPX R36 — this session just configured successfully, then failed to
                         // start; nothing else on this path was going to close it, unlike the
@@ -248,7 +256,9 @@ class Camera2ApiManager(context: Context) {
                 handler
             )
         } catch (_: IllegalStateException) {
-            reOpenCamera(cameraId)
+            // GPX R38 follow-up — same reasoning as the inner onConfigured catch above: only
+            // retry this attempt's own camera if it is still the current one.
+            if (openGeneration.get() == generation) reOpenCamera(cameraId)
         } catch (e: Exception) {
             cameraCallbacks?.onCameraError(cameraId, "Create capture session failed: " + e.message)
             Log.e(TAG, "Error", e)
