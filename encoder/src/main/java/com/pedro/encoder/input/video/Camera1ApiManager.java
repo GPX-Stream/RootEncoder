@@ -222,12 +222,16 @@ public class Camera1ApiManager implements Camera.PreviewCallback, Camera.FaceDet
       camera.startPreview();
       running = true;
       if (cameraCallbacks != null) {
-        cameraCallbacks.onCameraOpened();
+        // GPX R38 — Camera1 has no String camera id; cameraSelect (its int index) is the
+        // closest equivalent and is what CameraCallbacks now requires.
+        cameraCallbacks.onCameraOpened(String.valueOf(cameraSelect));
         cameraCallbacks.onCameraChanged(facing);
       }
       Log.i(TAG, width + "X" + height);
     } catch (IOException e) {
-      if (cameraCallbacks != null) cameraCallbacks.onCameraError("Error: " + e.getMessage());
+      if (cameraCallbacks != null) {
+        cameraCallbacks.onCameraError(String.valueOf(cameraSelect), "Error: " + e.getMessage());
+      }
       Log.e(TAG, "Error", e);
     }
   }

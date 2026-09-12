@@ -193,10 +193,10 @@ class Camera2ApiManager(context: Context) {
         isPrepared = true
     }
 
-    private fun startPreview(cameraDevice: CameraDevice, handler: Handler, generation: Long) {
+    private fun startPreview(cameraDevice: CameraDevice, handler: Handler, generation: Long, cameraId: String) {
         try {
             val surface = surfaceEncoder ?: run {
-                cameraCallbacks?.onCameraError("You need prepare camera before open it")
+                cameraCallbacks?.onCameraError(cameraId, "You need prepare camera before open it")
                 return
             }
             val listSurfaces = mutableListOf<Surface>()
@@ -216,7 +216,15 @@ class Camera2ApiManager(context: Context) {
                             handler
                         )
                     } catch (_: IllegalStateException) {
-                        reOpenCamera(cameraId)
+                        // GPX R38 follow-up — cameraId here is the id *this* attempt was opened
+                        // for, captured in openCameraId's own closure, not a live re-read. A
+                        // newer attempt can already be under way by the time this synchronous
+                        // throw is handled (its own openCameraId call racing this one on a
+                        // different thread) — reopening this attempt's camera regardless would
+                        // waste a hardware cycle and contend with whatever the app actually wants
+                        // now, exactly the interference this generation check exists elsewhere in
+                        // this file to prevent. Only retry if this attempt is still the current one.
+                        if (openGeneration.get() == generation) reOpenCamera(cameraId)
                     } catch (e: Exception) {
                         // GPX R36 — this session just configured successfully, then failed to
                         // start; nothing else on this path was going to close it, unlike the
@@ -236,21 +244,23 @@ class Camera2ApiManager(context: Context) {
                             Log.e(TAG, "failed to close the session that failed to start", closeFault)
                         }
                         if (cameraCaptureSession === it) cameraCaptureSession = null
-                        cameraCallbacks?.onCameraError("Create capture session failed: " + e.message)
+                        cameraCallbacks?.onCameraError(cameraId, "Create capture session failed: " + e.message)
                         Log.e(TAG, "Error", e)
                     }
                 },
                 onConfiguredFailed = {
                     it.close()
-                    cameraCallbacks?.onCameraError("Configuration failed")
+                    cameraCallbacks?.onCameraError(cameraId, "Configuration failed")
                     Log.e(TAG, "Configuration failed")
                 },
                 handler
             )
         } catch (_: IllegalStateException) {
-            reOpenCamera(cameraId)
+            // GPX R38 follow-up — same reasoning as the inner onConfigured catch above: only
+            // retry this attempt's own camera if it is still the current one.
+            if (openGeneration.get() == generation) reOpenCamera(cameraId)
         } catch (e: Exception) {
-            cameraCallbacks?.onCameraError("Create capture session failed: " + e.message)
+            cameraCallbacks?.onCameraError(cameraId, "Create capture session failed: " + e.message)
             Log.e(TAG, "Error", e)
         }
     }
@@ -1019,9 +1029,9 @@ class Camera2ApiManager(context: Context) {
                             return
                         }
                         this@Camera2ApiManager.cameraDevice = cameraDevice
-                        startPreview(cameraDevice, handler, generation)
+                        startPreview(cameraDevice, handler, generation, cameraId)
                         resolved.countDown()
-                        cameraCallbacks?.onCameraOpened()
+                        cameraCallbacks?.onCameraOpened(cameraId)
                         Log.i(TAG, "Camera opened")
                     }
 
@@ -1039,7 +1049,7 @@ class Camera2ApiManager(context: Context) {
                             Log.i(TAG, "An abandoned attempt disconnected; not reported")
                             return
                         }
-                        cameraCallbacks?.onCameraDisconnected()
+                        cameraCallbacks?.onCameraDisconnected(cameraId)
                         Log.i(TAG, "Camera disconnected")
                     }
 
@@ -1051,7 +1061,7 @@ class Camera2ApiManager(context: Context) {
                             Log.i(TAG, "An abandoned attempt failed: $i; not reported")
                             return
                         }
-                        cameraCallbacks?.onCameraError("Open camera failed: $i")
+                        cameraCallbacks?.onCameraError(cameraId, "Open camera failed: $i")
                         Log.e(TAG, "Open failed: $i")
                     }
 
@@ -1083,7 +1093,7 @@ class Camera2ApiManager(context: Context) {
                     // with nothing able to release it. A thread parked this way costs one stack
                     // and ends when the framework finally answers.
                     openGeneration.incrementAndGet()
-                    cameraCallbacks?.onCameraError("Camera $cameraId $abandonReason")
+                    cameraCallbacks?.onCameraError(cameraId, "Camera $cameraId $abandonReason")
                     Log.e(TAG, "Camera $cameraId $abandonReason; open abandoned")
                     return
                 }
@@ -1093,7 +1103,7 @@ class Camera2ApiManager(context: Context) {
                 this.facing = if (CameraMetadata.LENS_FACING_FRONT == facing) Facing.FRONT else Facing.BACK
                 cameraCallbacks?.onCameraChanged(this.facing)
             } catch (e: Exception) {
-                cameraCallbacks?.onCameraError("Open camera $cameraId failed")
+                cameraCallbacks?.onCameraError(cameraId, "Open camera $cameraId failed")
                 Log.e(TAG, "Error", e)
             }
         } else {
