@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<script type="text/markdown" id="recap">
+# Upstream sync overlap comparison — RootEncoder fork
+
+Chip session, orchestrated from a parallel gpxstream-app orchestrator (session_id
+`local_ddf2835c-a936-46a2-942a-41ab962554e5`). Task: sync `master` to upstream, then compare 4
+specific upstream commits against this fork's own already-shipped fixes for the same class of
+problem, and implement whatever's an unambiguous, low-risk, no-consumer-impact improvement.
+
+## Outcome
+
+- `master` fast-forwarded to `pedro/master` @ `620d05ffb` (8 commits past the last full-sync
+  point, R35) and pushed to `origin/master`. Pure mirror update, no GPX commit — per policy.
+- 4 non-merge commits in that range compared one by one against this fork's existing R-items:
+  - **SRT server-silence-timeout** (`442ee5b58`) vs `GPX R7`: kept R7 as-is. R7's dedicated
+    1-second-tick watchdog is architecturally sounder than upstream's reactive check, which only
+    evaluates when the blocking socket read happens to throw `SocketTimeoutException` — if the
+    read timeout mechanism ever fails to fire, upstream's check never runs. `gpxstream-app`
+    already reads R7's raw `getInboundSilenceMs()` counter and layers its own tunable threshold
+    (`livenessStallGraceMs`) on top, so no consumer need for `SrtClient` itself to be
+    configurable. No code change — this is a considered "ours is better" conclusion, not a
+    deferral.
+  - **Sender stuck in a blocking socket write on disconnect** (`f1c980001` + `cf419bd21`):
+    adopted as **R39**. Same defect class as R29 (unbounded `cancelAndJoin` on a call that
+    ignores cancellation) but on the network-sender path instead of the recording muxer — a real
+    gap R29/R30 never covered. Clean cherry-pick, no GPX markers nearby, no conflict.
+  - **`stopRecord` deadlock hardening** (`9a0cd3305`): adopted as **R40**, partially. Took the
+    `isActive` early-exit in the muxer-drain loop and the `onMainThreadHandler` fire-and-forget
+    swap (closes a real deadlock between `stopRecord()`'s `runBlocking` and a suspended
+    `onMainThread` call). **Did not** take upstream's narrower 1000ms join bound — resolved that
+    one line of the cherry-pick conflict in favor of R29's already-authorized, bench-verified
+    3000ms. Narrowing an already-shipped, tuned constant needs its own reason, not a free ride on
+    an unrelated adoption.
+  - **Legacy `isRecording()`→`isRunning()` fix** (`1d3d88d91`): not applicable. Only touches
+    `Camera1Base`/`Camera2Base`/`DisplayBase`/`FromFileBase`/`OnlyAudioBase` — `gpxstream-app`
+    builds exclusively on `StreamBase`/`SwitchableStream` (R33) and grepping the app repo found
+    zero references to any of those legacy classes. `StreamBase.kt`'s own `isRecording` property
+    is already `recordController.isRunning()` — the same fix, already in place on the path this
+    consumer actually uses.
+- Full technical comparison in `.claude/upstream-sync-2026-09-13-analysis.md` (this branch).
+- R39/R40 tracked in `.claude/gpx-reapply-plan-2.8.0.md` (new checklist entries) and
+  `.claude/gpx-branch-policy.md` (verification-status paragraph).
+- `gradlew clean assembleDebug test` green across every module and the sample app, both right
+  after the cherry-picks and again after the doc edits.
+- Opened [PR #9](https://github.com/GPX-Stream/RootEncoder/pull/9) against `gpx-2.8` from
+  `feat/adopt-upstream-teardown-hardening` (worktree at
+  `.claude/worktrees/adopt-upstream-teardown-hardening`). **Not merged** — merge is the
+  orchestrator's/Andy's call, not this chip's.
+
+## Why the SRT comparison landed the way it did
+
+The interesting finding wasn't "which is newer" — it's that `gpxstream-app` had already,
+independently, built a superior version of upstream's own idea on top of R7's raw counter
+(`drivers/LivenessSampler.kt`'s `livenessStallGraceMs`, a per-protocol tunable floor). That made
+"should R7 become configurable" a non-question: the configurability upstream just added already
+exists one layer up, on the consumer side, and R7's fixed threshold is doing a different,
+narrower job (a fast, specific-server-drop-pattern fail-fast) that the consumer's own generic
+12-second-floor stall check doesn't replace.
+
+## Gotchas hit this session
+
+- `cf419bd21` (the very next commit after `f1c980001`) refactors `f1c980001`'s own fix — moves
+  the bounded-retry logic from the RTMP/RTSP call sites into `BaseSender.stop()` itself as an
+  `unlockNeeded` callback parameter. Cherry-picking `f1c980001` alone would have landed
+  immediately-superseded code; had to pull both commits, in order, to get the real final state.
+- The R29/R40 cherry-pick conflict landed on exactly one line (the join bound), which made the
+  "keep ours, take the rest" resolution mechanical rather than a judgment call — worth confirming
+  before assuming a conflicting commit is an all-or-nothing adopt/reject choice.
+- `.claude/` is entirely gitignored in this repo (`/.claude` in `.gitignore`) but its docs
+  (`gpx-branch-policy.md`, `gpx-reapply-plan-2.8.0.md`, session-recaps, this skill) are
+  force-added and tracked. A plain `git add` on a new file under `.claude/` silently no-ops —
+  needs `git add -f`, every time.
+- This repo has its own `.claude/skills/upstream-sync/SKILL.md` describing the *full* periodic
+  sync procedure (R26/R27/R31/R35 style — `git merge --no-ff pedro/master` across the whole
+  delta). This session's task was explicitly a narrower, selective cherry-pick of specific
+  commits, not a full sync, so that skill's merge mechanics didn't directly apply — but its
+  doc-update conventions (reapply-plan entry format, marker verification, branch-policy
+  paragraph) were worth mirroring anyway, and did get followed.
+
+## Still open (needs Andy / the orchestrator)
+
+- **PR #9 needs review and a merge decision.** Nothing in it is a judgment call by the criteria
+  this session was given (no existing-mechanism replacement, no cross-repo consumer change
+  needed) — but the fork's own standing rule is every GPX change needs its own approval, and
+  merge decisions are explicitly reserved for the user, not this chip.
+- No tag cut, no pin move — deliberately out of scope per the task brief and the fork's own
+  policy (tag/pin moves are always their own separately-authorized step).
+
+## AI notes (scratch — optional, written by Claude for future sessions)
+
+Worth remembering for future upstream-comparison work on this fork: check whether a commit you're
+about to adopt is itself superseded by a *later* commit in the same batch before cherry-picking
+it in isolation — `git log --oneline <old>..<new> -- <path>` on the specific files touched would
+have caught the `f1c980001`→`cf419bd21` relationship immediately, cheaper than discovering it by
+reading full diffs of every commit in the range.
+</script>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Upstream Sync Overlap Comparison — 2026-09-13 11:14</title>
+<style>
+  :root{--red-500:#EF3340;--red-700:#B3242B;--red-50:#FDECEC;--paper:#FAF8F5;--card:#FFFFFF;
+    --border:#DDD7CF;--border-subtle:#ECE7E0;--fg-1:#181512;--fg-2:#3D3833;--fg-3:#6B645C;
+    --ok:#12B76A;--attn:#F79009;--chip:#F1ECE5;
+    --font-display:"Barlow Condensed","Oswald","Segoe UI Semibold",system-ui,sans-serif;
+    --font-mono:"Roboto Mono",ui-monospace,"Cascadia Code",Consolas,Menlo,monospace;
+    --radius-md:4px;--radius-lg:8px;--shadow:0 1px 2px rgba(11,9,8,.06),0 4px 8px -2px rgba(11,9,8,.06);--maxw:880px;}
+  *{box-sizing:border-box;}html,body{margin:0;padding:0;}
+  body{background:var(--paper);color:var(--fg-2);font-family:var(--font-mono);font-size:15px;line-height:1.6;-webkit-font-smoothing:antialiased;}
+  .wrap{max-width:var(--maxw);margin:0 auto;padding:0 28px 72px;}
+  .topbar{max-width:var(--maxw);margin:0 auto;padding:26px 28px 0;display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;}
+  .logo{display:inline-flex;align-items:center;gap:9px;}
+  .logo .flag{background:var(--red-500);color:#fff;font-family:var(--font-display);font-weight:800;font-size:17px;padding:3px 7px 2px;border-radius:2px;line-height:1;}
+  .logo .word{font-family:var(--font-display);font-weight:700;font-size:17px;letter-spacing:.14em;text-transform:uppercase;color:var(--fg-1);}
+  .doc-meta{font-size:11px;letter-spacing:.13em;text-transform:uppercase;color:var(--fg-3);text-align:right;}
+  .doc-meta .tag{color:var(--red-700);font-weight:700;}
+  .topdivide{max-width:var(--maxw);margin:16px auto 0;padding:0 28px;}.topdivide hr{border:0;border-top:2px solid var(--red-500);margin:0;}
+  .hero{padding:38px 0 4px;}
+  .eyebrow{font-size:11px;font-weight:700;letter-spacing:.26em;text-transform:uppercase;color:var(--red-700);margin:0 0 12px;}
+  h1{font-family:var(--font-display);font-weight:800;font-size:42px;line-height:1.05;text-transform:uppercase;color:var(--fg-1);margin:0 0 14px;}
+  .standfirst{font-size:16px;color:var(--fg-2);max-width:64ch;margin:0;}
+  .stats{display:flex;flex-wrap:wrap;gap:10px;margin-top:22px;}
+  .stat{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-md);padding:9px 15px;box-shadow:var(--shadow);}
+  .stat b{font-family:var(--font-display);font-weight:700;font-size:22px;color:var(--fg-1);display:block;line-height:1;margin-bottom:3px;}
+  .stat span{font-size:10px;letter-spacing:.13em;text-transform:uppercase;color:var(--fg-3);}
+  details{padding-top:34px;border:0;}details+details{border-top:1px solid var(--border-subtle);}
+  summary{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;cursor:pointer;list-style:none;padding-top:6px;}
+  summary::-webkit-details-marker{display:none;}summary .htext{flex:1;}
+  summary .chev{font-family:var(--font-mono);font-weight:700;font-size:20px;line-height:1;color:var(--red-500);margin-top:16px;transition:transform .18s ease;user-select:none;}
+  details[open] summary .chev{transform:rotate(90deg);}summary:hover h2{color:var(--red-700);}
+  .count{font-family:var(--font-mono);font-size:12px;font-weight:700;color:var(--red-700);background:var(--red-50);border-radius:20px;padding:2px 9px;margin-left:10px;vertical-align:middle;}
+  .secbody{padding-top:14px;}
+  .sec-eyebrow{font-size:11px;font-weight:700;letter-spacing:.22em;text-transform:uppercase;color:var(--red-700);margin:0 0 8px;display:flex;align-items:center;gap:10px;}
+  .sec-eyebrow::before{content:"";width:18px;height:2px;background:var(--red-500);display:inline-block;}
+  h2{font-family:var(--font-display);font-weight:700;font-size:26px;line-height:1.1;text-transform:uppercase;color:var(--fg-1);margin:0;transition:color .12s;}
+  h3{font-family:var(--font-mono);font-weight:700;font-size:13.5px;color:var(--fg-1);margin:0 0 6px;}
+  p{margin:0 0 12px;}p:last-child{margin-bottom:0;}strong{color:var(--fg-1);font-weight:700;}
+  code{font-family:var(--font-mono);background:var(--chip);padding:.1em .4em;border-radius:3px;font-size:.86em;color:var(--fg-1);}
+  .cards{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:18px 20px;box-shadow:var(--shadow);}
+  .card .tag{display:inline-flex;align-items:center;gap:8px;font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;margin-bottom:10px;}
+  .dot{width:9px;height:9px;border-radius:50%;display:inline-block;}.dot.ok{background:var(--ok);}.dot.attn{background:var(--attn);}
+  .card p{font-size:13.5px;margin:0;}
+  .timeline{display:grid;}
+  .commit{display:grid;grid-template-columns:84px 1fr;gap:14px;align-items:baseline;padding:9px 0;border-bottom:1px solid var(--border-subtle);}
+  .commit:last-child{border-bottom:0;}
+  .commit .hash{background:var(--fg-1);color:#fff;font-size:11.5px;padding:3px 0;border-radius:3px;text-align:center;letter-spacing:.02em;}
+  .commit .msg{font-size:13.5px;color:var(--fg-2);}.commit .msg strong{color:var(--fg-1);}
+  ul.clean{list-style:none;margin:0;padding:0;display:grid;gap:8px;}
+  ul.clean li{position:relative;padding-left:24px;font-size:13.5px;color:var(--fg-2);}
+  ul.clean li::before{content:"";position:absolute;left:3px;top:8px;width:7px;height:7px;background:var(--red-500);border-radius:1px;transform:rotate(45deg);}
+  ul.clean li strong{color:var(--fg-1);}
+  .check{list-style:none;margin:0;padding:0;display:grid;gap:11px;}
+  .check li{position:relative;padding-left:28px;font-size:13.5px;color:var(--fg-2);}
+  .check li::before{content:"";position:absolute;left:0;top:2px;width:15px;height:15px;border:2px solid var(--attn);border-radius:3px;}
+  .check li strong{color:var(--fg-1);}
+  .resume .secbody{background:var(--fg-1);color:#EDE9E3;border-radius:var(--radius-lg);padding:20px 24px;margin-top:14px;}
+  .resume pre{background:#231e1a;border:1px solid #3a332d;color:#D9D2CA;font-size:12.5px;box-shadow:none;margin:0;}
+  pre{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:13px 16px;overflow-x:auto;font-size:12px;line-height:1.5;color:var(--fg-2);box-shadow:var(--shadow);margin:0 0 6px;}
+  pre code{background:none;padding:0;color:var(--fg-2);}
+  .raw pre{max-height:520px;overflow:auto;font-size:11.5px;white-space:pre-wrap;word-break:break-word;}
+  .raw .hint{font-size:11px;color:var(--fg-3);margin:0 0 8px;}
+  footer{max-width:var(--maxw);margin:48px auto 0;padding:20px 28px 36px;border-top:1px solid var(--border);display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--fg-3);}
+  .controls{max-width:var(--maxw);margin:18px auto 0;padding:0 28px;text-align:right;}
+  .controls button{font-family:var(--font-mono);font-size:10.5px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--fg-3);background:none;border:1px solid var(--border);border-radius:20px;padding:5px 12px;cursor:pointer;}
+  .controls button:hover{color:var(--red-700);border-color:var(--red-500);}
+  @media (max-width:640px){h1{font-size:32px;}h2{font-size:22px;}.cards{grid-template-columns:1fr;}.commit{grid-template-columns:72px 1fr;}}
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <span class="logo"><span class="flag">GPX</span><span class="word">Stream</span></span>
+    <span class="doc-meta"><span class="tag">Session Recap · Internal</span><br />RootEncoder · 2026-09-13</span>
+  </div>
+  <div class="topdivide"><hr /></div>
+  <div class="wrap">
+    <div class="hero">
+      <p class="eyebrow">Session Recap · 2026-09-13 11:14</p>
+      <h1>Upstream Sync Overlap Comparison</h1>
+      <p class="standfirst">Synced <code>master</code> to upstream, compared 4 new pedroSG94 commits against this fork's own already-shipped fixes, adopted the 2 that were clean and non-overlapping as R39/R40, and opened PR #9 — merge decision left to Andy.</p>
+      <div class="stats">
+        <div class="stat"><b>4</b><span>Commits compared</span></div>
+        <div class="stat"><b>2</b><span>Adopted (R39/R40)</span></div>
+        <div class="stat"><b>2</b><span>Kept as-is / N-A</span></div>
+        <div class="stat"><b>#9</b><span>PR opened, unmerged</span></div>
+      </div>
+    </div>
+    <div class="controls">
+      <button type="button" onclick="document.querySelectorAll('details').forEach(d=>d.open=true)">Expand all</button>
+      <button type="button" onclick="document.querySelectorAll('details').forEach(d=>d.open=false)">Collapse all</button>
+    </div>
+
+    <details open>
+      <summary><span class="htext"><span class="sec-eyebrow">Status</span><h2>What Happened</h2></span><span class="chev">&rsaquo;</span></summary>
+      <div class="secbody">
+        <div class="cards">
+          <div class="card"><span class="tag"><span class="dot ok"></span>Done</span><p><code>master</code> fast-forwarded to <code>pedro/master</code>@<code>620d05ffb</code> and pushed. R39 (sender-unblock-on-disconnect) and R40 (stopRecord deadlock hardening, partial) cherry-picked onto a worktree branch, build green, PR #9 opened against <code>gpx-2.8</code>.</p></div>
+          <div class="card"><span class="tag"><span class="dot attn"></span>Waiting on Andy</span><p>PR #9 review and merge decision. Nothing in it needs a design call — the fork's own rule is every GPX change needs its own approval, and merge is reserved for the user.</p></div>
+        </div>
+      </div>
+    </details>
+
+    <details open>
+      <summary><span class="htext"><span class="sec-eyebrow">Comparison</span><h2>The 4 Commits</h2></span><span class="chev">&rsaquo;</span></summary>
+      <div class="secbody">
+        <ul class="clean">
+          <li><strong>SRT server-silence-timeout</strong> vs GPX R7 — kept R7, no change. R7's independent tick beats upstream's reactive-on-timeout check; the app already layers its own tunable threshold on top of R7's raw counter.</li>
+          <li><strong>Sender stuck in a blocking socket write</strong> — adopted as R39. Same defect class as R29, different code path (network sender vs. recording muxer), zero conflict.</li>
+          <li><strong>stopRecord deadlock hardening</strong> — adopted as R40, partially. Took the loop early-exit and the main-thread dispatch fix; kept R29's 3000ms join bound over upstream's 1000ms.</li>
+          <li><strong>Legacy isRecording→isRunning fix</strong> — not applicable. Touches classes gpxstream-app never uses; <code>StreamBase.kt</code> already has the equivalent fix.</li>
+        </ul>
+      </div>
+    </details>
+
+    <details>
+      <summary><span class="htext"><span class="sec-eyebrow">Reference</span><h2>Gotchas</h2></span><span class="chev">&rsaquo;</span></summary>
+      <div class="secbody">
+        <ul class="clean">
+          <li><strong>Two-commit dependency</strong> — <code>cf419bd21</code> refactors <code>f1c980001</code>'s own fix; had to cherry-pick both, in order, or land immediately-superseded code.</li>
+          <li><strong>.claude/ is gitignored but tracked</strong> — new files under it need <code>git add -f</code>, every time.</li>
+          <li><strong>This repo has its own upstream-sync skill</strong> for full periodic merges — this task was a narrower selective cherry-pick, so the merge mechanics didn't apply, but the doc-update conventions did.</li>
+        </ul>
+      </div>
+    </details>
+
+    <details class="resume" open>
+      <summary><span class="htext"><span class="sec-eyebrow">Next</span><h2>Resume / Open Items</h2></span><span class="chev">&rsaquo;</span></summary>
+      <div class="secbody">
+        <pre>Review and decide on PR #9 (GPX-Stream/RootEncoder):
+https://github.com/GPX-Stream/RootEncoder/pull/9
+
+No tag cut, no pin move — deliberately out of scope,
+per standing policy those are their own separate step.</pre>
+      </div>
+    </details>
+
+    <details class="raw">
+      <summary><span class="htext"><span class="sec-eyebrow">For the record</span><h2>Full Record + AI Notes</h2></span><span class="chev">&rsaquo;</span></summary>
+      <div class="secbody">
+        <p class="hint">Complete raw recap + Claude's scratch notes — the same canonical block the AI reads from the top of this file.</p>
+        <pre id="fullmd"></pre>
+      </div>
+    </details>
+  </div>
+  <footer><span>GPX Stream · Session Recap · 2026-09-13 11:14</span><span>Internal — RootEncoder</span></footer>
+  <script>document.getElementById('fullmd').textContent=document.getElementById('recap').textContent.trim();</script>
+</body>
+</html>
