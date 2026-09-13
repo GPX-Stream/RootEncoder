@@ -68,6 +68,6 @@ class StreamingStatsMonitor(private val bitrateChecker: BitrateChecker) {
       bitrate = bytesOutPerSecond * 8,
       smoothedBitrate = smoothedBitrate,
     )
-    onMainThread { bitrateChecker.onStreamingStats(report) }
+    onMainThreadHandler { bitrateChecker.onStreamingStats(report) }
   }
 }
