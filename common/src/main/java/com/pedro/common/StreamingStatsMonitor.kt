@@ -68,7 +68,6 @@ class StreamingStatsMonitor(private val bitrateChecker: BitrateChecker) {
       bitrate = bytesOutPerSecond * 8,
       smoothedBitrate = smoothedBitrate,
     )
-    // GPX R40 — same fire-and-forget dispatch as BitrateManager.calculateBitrate, same reason.
     onMainThreadHandler { bitrateChecker.onStreamingStats(report) }
   }
 }

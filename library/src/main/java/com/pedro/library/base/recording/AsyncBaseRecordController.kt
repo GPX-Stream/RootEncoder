@@ -231,7 +231,6 @@ abstract class AsyncBaseRecordController : RecordController {
       val channel = muxerChannel ?: return@launch
       for (frame in channel) {
         try {
-          // GPX R40 — stop a cancelled job from starting a fresh write (upstream 9a0cd3305).
           if (!isActive) break
           onWriteFrame(frame)
         } finally {
@@ -259,8 +258,8 @@ abstract class AsyncBaseRecordController : RecordController {
     // timeout it is parked in a non-cancellable write and joining longer only parks this thread
     // too. On timeout the job is abandoned (its scope is Dispatchers.IO, so a straggler frees
     // itself when the stuck write eventually errors or the process ends); the stalled file is lost
-    // regardless, and the caller — the engine thread, on release() — survives. GPX R40 —
-    // upstream's own fix for this same join (commit 9a0cd3305) uses a 1000ms bound; kept at R29's
+    // regardless, and the caller — the engine thread, on release() — survives. Upstream's own fix
+    // for this same join (commit 9a0cd3305, adopted as R40) uses a 1000ms bound; kept at R29's
     // already-authorized, bench-verified 3000ms rather than silently narrowing it — see
     // .claude/upstream-sync-2026-09-13-analysis.md, item 4.
     runBlocking { withTimeoutOrNull(STOP_JOIN_TIMEOUT_MS) { muxerJob?.join() } }
