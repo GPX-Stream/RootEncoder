@@ -117,6 +117,8 @@ suspend fun onMainThread(code: () -> Unit) {
   }
 }
 
+// GPX R40 — null-Looper guard (upstream 9a0cd3305): a null main looper (e.g. a JVM unit test)
+// previously threw here; now runs the callback inline instead.
 fun onMainThreadHandler(code: () -> Unit) {
   val looper = Looper.getMainLooper()
   if (looper == null) code() else Handler(looper).post(code)

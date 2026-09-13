@@ -566,6 +566,7 @@ class RtmpClient(private val connectChecker: ConnectChecker) {
   }
 
   private suspend fun disconnect(clear: Boolean) {
+    // GPX R39 — closes the socket if the bounded stop() doesn't finish cooperatively.
     if (isStreaming) rtmpSender.stop(clear, unlockNeeded = { socket?.close() })
     runCatching {
       withTimeoutOrNull(100.milliseconds) {

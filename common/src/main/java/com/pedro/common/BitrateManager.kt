@@ -39,6 +39,10 @@ open class BitrateManager(private val bitrateChecker: BitrateChecker) {
       bitrateOld = (bitrateOld + exponentialFactor * (currentValue - bitrateOld)).toLong()
       timeStamp = TimeUtils.getCurrentTimeMillis()
       bitrate = 0
+      // GPX R40 — onMainThreadHandler() (fire-and-forget) instead of onMainThread() (suspends,
+      // waits for the post to run): stopRecord()'s runBlocking can occupy the main thread while a
+      // suspended onMainThread() call here waits for that same thread — a real deadlock shape
+      // upstream (9a0cd3305) closed.
       onMainThreadHandler { bitrateChecker.onNewBitrate(bitrateOld) }
     }
   }

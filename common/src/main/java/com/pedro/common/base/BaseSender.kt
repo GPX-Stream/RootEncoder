@@ -121,6 +121,11 @@ abstract class BaseSender(
         }
     }
 
+    // GPX R39 — cancelAndJoin() can't interrupt a coroutine blocked in a java.io socket write
+    // under TCP backpressure, so an unbounded join here could park the caller as long as the
+    // network took to recover (upstream 9a0cd3305/f1c980001, adopted verbatim). A bounded stop
+    // tries the cooperative path first; if it doesn't finish, unlockNeeded() closes the socket
+    // to unblock the write with an IOException, then a second bounded join reaps it.
     suspend fun stop(clear: Boolean = true, unlockNeeded: suspend () -> Unit = {}) {
         running = false
         stopImp(clear)
