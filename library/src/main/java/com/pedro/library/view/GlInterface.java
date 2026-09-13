@@ -261,4 +261,47 @@ public interface GlInterface {
    * @param listener called after each preview frame is drawn, or null to remove it.
    */
   void setPreviewFrameListener(@Nullable Runnable listener);
+
+  /**
+   * GPX R41 — the second, independent camera source (gpxstream-app issue #272, Decision 4). Brings
+   * up a second GL input pipeline the first time this is called, so a consumer that never calls it
+   * costs nothing extra. Attach this the same way {@link #getSurfaceTexture()} is attached to the
+   * first camera — the two are fully independent inputs.
+   *
+   * Implemented by GlStreamInterface; view-based interfaces have no second render pipeline, so they
+   * throw {@link UnsupportedOperationException} rather than silently returning something nothing
+   * ever updates.
+   *
+   * @return the second source's SurfaceTexture.
+   */
+  @NonNull
+  SurfaceTexture getSecondarySurfaceTexture();
+
+  /**
+   * GPX R41 — {@link Surface} counterpart to {@link #getSecondarySurfaceTexture()}.
+   */
+  @NonNull
+  Surface getSecondarySurface();
+
+  /**
+   * GPX R41 — which of the two open camera sources the stream target draws its base picture from.
+   * Defaults to {@link GlCameraSource#PRIMARY}. When both stream and record point at PRIMARY
+   * (today's only mode before this existed), behavior is byte-for-byte identical to before.
+   * Switching which texture a target samples is a GL-side rebind — it never touches the muxer or
+   * the video encoder (gpxstream-app design doc 272, Decision 4, point 3).
+   *
+   * Implemented by GlStreamInterface; view-based interfaces have no separate stream/record
+   * branches to split, so they no-op and always draw PRIMARY.
+   *
+   * @param source which camera source the stream target should draw its base picture from.
+   */
+  void setStreamSource(@NonNull GlCameraSource source);
+
+  /**
+   * GPX R41 — the record-target counterpart to {@link #setStreamSource}. Mirrors
+   * {@link #setRecordOverlay}'s per-target-setter shape.
+   *
+   * @param source which camera source the record target should draw its base picture from.
+   */
+  void setRecordSource(@NonNull GlCameraSource source);
 }

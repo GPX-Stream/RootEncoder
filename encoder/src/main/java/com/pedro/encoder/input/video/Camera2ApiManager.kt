@@ -70,6 +70,13 @@ import kotlin.math.roundToInt
  *
  * Note: you can use opengl for surfaceEncoder to buffer encoder on devices 21 < API > 16:
  * https://github.com/google/grafika
+ *
+ * GPX R41 — nothing in this class assumes it is the only instance: `openGeneration`,
+ * `captureSessionExecutor`, `cameraDevice` and every other piece of open/close state are
+ * per-instance fields. Two independent instances, each prepared with its own `SurfaceTexture` and
+ * opened with its own camera id, run fully isolated from one another — that is the supported way
+ * to hold two cameras open at once (gpxstream-app issue #272, Decision 4). See
+ * [Companion.canOpenConcurrently] before assuming a device's camera HAL actually allows it.
  */
 @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
 class Camera2ApiManager(context: Context) {
@@ -1357,6 +1364,36 @@ class Camera2ApiManager(context: Context) {
             cameraDevice.createCaptureSession(config)
         } else {
             cameraDevice.createCaptureSession(surfaces, callback, handler)
+        }
+    }
+
+    companion object {
+        /**
+         * GPX R41 — whether [cameraId] and [otherCameraId] can each be held open by their own
+         * [Camera2ApiManager] instance at the same time (gpxstream-app issue #272, Decision 4's
+         * "gap this decision didn't address"). Nothing in this class prevents two independent
+         * instances from being constructed and opened concurrently — every piece of open/close
+         * state here (`openGeneration`, `captureSessionExecutor`, `cameraDevice`, and so on) is a
+         * per-instance field, not shared — but whether the *device's camera HAL* actually
+         * supports two sessions at once is a real, per-device constraint no fork change can
+         * assume away. Backed by [CameraManager.getConcurrentCameraIds] (API 30+), which reports
+         * the id combinations this specific device guarantees. Below API 30, or if the platform
+         * reports no combination containing both ids, this returns false — the caller's second
+         * open path must treat that the same as any other camera the device refuses: report it
+         * through [CameraCallbacks.onCameraError], never crash, never assume success.
+         */
+        @JvmStatic
+        fun canOpenConcurrently(context: Context, cameraId: String, otherCameraId: String): Boolean {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return false
+            return try {
+                val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+                cameraManager.concurrentCameraIds.any { combination ->
+                    cameraId in combination && otherCameraId in combination
+                }
+            } catch (e: Exception) {
+                Log.e("Camera2ApiManager", "Error querying concurrent camera support", e)
+                false
+            }
         }
     }
 }

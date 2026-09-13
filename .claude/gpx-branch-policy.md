@@ -169,3 +169,43 @@ widens to cover R31/R32's A/V-sync and frame-pacing watch items alongside R33's 
 swaps, R34's preview-attach fix, fork change 8/9/10's own composite/liveness behavior, and
 R35's teardown-order change (ordinary stop/release paths, not a new invariant — low watch
 priority, but new to this range).
+
+**R41 — a second, independent camera source (consumer issue #272, Decision 4).** Built directly,
+without waiting on a prerequisite bandwidth/thermal bench test — the consumer's ruling
+(2026-09-13) drops that gate for this work; ordinary bench QA applies once it exists, same as any
+other slice. Two parts:
+
+- **A second concurrent camera-open path needs no new code in `Camera2ApiManager`.** Every piece
+  of its open/close state (`openGeneration`, `captureSessionExecutor`, `cameraDevice`, and so on)
+  was already a per-instance field, not shared — so a consumer holds two cameras open at once
+  simply by constructing two independent instances, each with its own bounded open, its own
+  generation guard and its own reused executor (fork changes R23/R36/R37/R38), for free. What *is*
+  new: `Camera2ApiManager.canOpenConcurrently(context, cameraId, otherCameraId)`, backed by
+  `CameraManager.getConcurrentCameraIds()` (API 30+), because whether two sessions can actually run
+  concurrently is a real per-device HAL constraint no fork change can assume — it returns false
+  below API 30 or when the platform reports no matching combination, and the caller is expected to
+  treat that the same as any other camera the device refuses.
+- **A second GL input pipeline, added to `MainRender`/`GlStreamInterface`.** `GlInterface` gains
+  `getSecondarySurfaceTexture()`/`getSecondarySurface()` (attach a second open camera to these, the
+  same way the existing ones attach the first) and `setStreamSource(GlCameraSource)`/
+  `setRecordSource(GlCameraSource)` — which of the two open sources each render target draws its
+  base picture from, mirroring fork change 8's `setStreamOverlay`/`setRecordOverlay` per-target
+  shape. The second pipeline is fully lazy: nothing is allocated until a caller actually asks for
+  the secondary SurfaceTexture, so a consumer that never touches this is unaffected — same texture,
+  same draw calls, same cost as before this existed. Switching a target's source is a GL-side
+  texture rebind inside `GlStreamInterface.draw()` — it never touches `prepareVideo`, an encoder,
+  or the muxer, the bar the consumer's own text sets ("the old code already swaps the source under
+  a running encoder without cutting the file"). `OpenGlView` (no second render pipeline to bring
+  up) throws on the two getters and no-ops on the two setters. Preview, multi-preview and photo
+  capture are unchanged — Decision 4 names only the stream and record targets, so those three keep
+  drawing the primary/filtered pipeline unconditionally regardless of what `setRecordSource` is set
+  to; a VOD thumbnail can therefore show a different camera than what `setRecordSource` just routed
+  into the recording file, a known, deliberately out-of-scope asymmetry with fork change 8/9's
+  overlay-follows-record precedent.
+
+`gradlew clean assembleDebug test` passes across every module and the sample app. Not
+bench-verified — no device access from this session. Two things the next bench pass needs to
+check, named explicitly because nothing here can confirm them: whether the fleet PDT's camera HAL
+actually reports a concurrent-capable id combination via `getConcurrentCameraIds()`, and whether
+the record target's base picture genuinely shows the second camera's own feed, independent of
+whatever the stream target is drawing, when both are opened together.
