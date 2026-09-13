@@ -455,6 +455,43 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       exist elsewhere to prevent, just in the retry direction instead of the reporting one.
       Both sites now check `openGeneration.get() == generation` before retrying, so a stale
       attempt quietly stops instead of reopening the wrong camera.
+- [x] R39 — cherry-picked ahead of the next full sync, not part of one: upstream
+      `f1c980001` + `cf419bd21` ("rtmp/rtsp: unblock a sender stuck in a socket write on
+      disconnect", then "refactor sender stop to delegate close into stop sender").
+      `BaseSender.stop()`'s `job?.cancelAndJoin()` doesn't return while the sender coroutine
+      is blocked in a `java.io` socket write under TCP backpressure — cancellation can't
+      interrupt a blocking write, so a `reConnect` hung for as long as the network took to
+      recover. Fix: try a cooperative stop bounded to 1000ms; if it doesn't finish, run a
+      caller-supplied `unlockNeeded` callback (closes the socket, which unblocks the write
+      with an `IOException`) and try again, bounded again. Lands in `BaseSender.kt`
+      (`stop()` gains an `unlockNeeded` parameter) and `RtmpClient.kt`/`RtspClient.kt`
+      (pass `{ socket?.close() }`). SRT is unaffected — UDP sends don't block on ACKs.
+      Same defect class as R29 (an unbounded join on a blocking call cancellation can't
+      interrupt), on a different, non-overlapping path — R29 bounds the recording muxer's
+      join, this bounds the network sender's. No GPX markers existed anywhere near the
+      touched lines; cherry-picked clean, no conflicts, no inline `GPX R39` marker (adopted
+      upstream code, same convention as the R26/R27/R31/R35 merge entries). Comparison
+      recorded in `.claude/upstream-sync-2026-09-13-analysis.md`, item 2.
+- [x] R40 — cherry-picked ahead of the next full sync: upstream `9a0cd3305` ("fix possible
+      stopRecord deadlockW"). Four changes bundled together: (1)
+      `AsyncBaseRecordController`'s muxer-drain loop gains `if (!isActive) break` before
+      `onWriteFrame(frame)`, so it doesn't start a fresh write on an already-cancelled job;
+      (2) `stopRecord`'s bounded join (upstream's own version of R29) drops to 1000ms; (3)
+      `BitrateManager.calculateBitrate` and `StreamingStatsMonitor` switch their
+      bitrate/stats callback dispatch from `onMainThread` (suspends, waits for the main
+      thread to actually run the post) to `onMainThreadHandler` (fire-and-forget
+      `Handler.post()`) — breaks a real deadlock shape where `stopRecord()`'s `runBlocking`
+      occupies the main thread while a concurrent coroutine is suspended waiting for that
+      same main thread to run a posted bitrate callback; (4) `onMainThreadHandler` gains a
+      null-`Looper` guard. Adopted (1), (3) and (4) as-is — no GPX marker on any of them,
+      none had prior GPX involvement. **Did not adopt (2)**: resolved the cherry-pick
+      conflict in favor of keeping `STOP_JOIN_TIMEOUT_MS` at R29's already-authorized,
+      bench-verified 3000ms (`gpxstream-app` S8 post-merge review, F1/CRITICAL) rather than
+      silently narrowing it to upstream's 1000ms — narrowing an already-shipped, tuned
+      constant is a real behavior change, not a mechanical adoption, and needs its own
+      reason if it's ever revisited. R29's comment extended (still one `GPX R29` marker,
+      not a second tag) to note the divergence and point at the analysis doc. Comparison
+      recorded in `.claude/upstream-sync-2026-09-13-analysis.md`, item 3.
 - [x] R24 — Tag `2.8.0-gpx2` and bump the pin in `gpxstream-app`. **Done 2026-08-12**: the tag
       was cut at `a88f8d58f` (R28 included) with the consumer's pin move (gpxstream-app #46) for
       the S8 tier flip, superseding the 2026-08-03 hold; `2.8.0-gpx3` followed 2026-08-13 with
