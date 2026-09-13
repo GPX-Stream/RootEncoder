@@ -170,6 +170,21 @@ swaps, R34's preview-attach fix, fork change 8/9/10's own composite/liveness beh
 R35's teardown-order change (ordinary stop/release paths, not a new invariant — low watch
 priority, but new to this range).
 
+**R39, R40 (2026-09-13) — two upstream commits cherry-picked ahead of the next full sync, not
+part of one.** `master` was fast-forwarded to `pedro/master` @ `620d05ffb` (8 commits past R35);
+of the 4 non-merge commits in that range, 2 were adopted as targeted teardown-robustness fixes
+with no GPX-marked lines nearby (R39: `BaseSender.stop()` no longer hangs a `reConnect`
+indefinitely when the sender is blocked in a TCP write under backpressure; R40: an `isActive`
+early-exit in the muxer-drain loop, plus a fire-and-forget swap for the bitrate/stats callback
+dispatch that closes a real deadlock shape between `stopRecord()`'s `runBlocking` and a
+suspended `onMainThread` call). One commit (SRT server-silence-timeout) was evaluated and kept
+as a documented "ours is better, no change" against `GPX R7`; one (`isRecording`→`isRunning` in
+the legacy `Camera1Base`/`Camera2Base`/`DisplayBase`/`FromFileBase`/`OnlyAudioBase` classes) is
+not applicable — this consumer builds exclusively on `StreamBase`, which already had the
+equivalent fix. Full comparison in `.claude/upstream-sync-2026-09-13-analysis.md`. No tag cut,
+no pin move — ordinary stop/teardown paths, low watch priority, folded into whatever bench gate
+the next tag/pin move covers.
+
 **R41 — a second, independent camera source (consumer issue #272, Decision 4).** Built directly,
 without waiting on a prerequisite bandwidth/thermal bench test — the consumer's ruling
 (2026-09-13) drops that gate for this work; ordinary bench QA applies once it exists, same as any

@@ -39,7 +39,7 @@ open class BitrateManager(private val bitrateChecker: BitrateChecker) {
       bitrateOld = (bitrateOld + exponentialFactor * (currentValue - bitrateOld)).toLong()
       timeStamp = TimeUtils.getCurrentTimeMillis()
       bitrate = 0
-      onMainThread { bitrateChecker.onNewBitrate(bitrateOld) }
+      onMainThreadHandler { bitrateChecker.onNewBitrate(bitrateOld) }
     }
   }
 
