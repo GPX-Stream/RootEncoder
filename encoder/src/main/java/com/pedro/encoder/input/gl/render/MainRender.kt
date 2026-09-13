@@ -34,6 +34,10 @@ import java.util.concurrent.atomic.AtomicBoolean
 class MainRender {
   private val cameraRender = CameraRender()
   private val screenRender = ScreenRender()
+  // GPX R41 — the record/stream route's own independent second camera input (gpxstream-app issue
+  // #272, Decision 4). Null until a caller actually asks for it via initSecondarySource, so a
+  // consumer that never touches this allocates no extra texture, FBO or draw call.
+  private var secondaryCameraRender: CameraRender? = null
   private var width = 0
   private var height = 0
   private var previewWidth = 0
@@ -41,6 +45,13 @@ class MainRender {
   private var context: Context? = null
   private var filterRenders = mutableListOf<BaseFilterRender>()
   private val running = AtomicBoolean(false)
+  // GPX R41 — the texture id the filter chain last produced, tracked so
+  // drawScreenEncoderFromSecondary can restore screenRender's texId after borrowing it. Without
+  // this, a record-target draw pointed at the secondary source would leave screenRender still
+  // pointed at the secondary texture for whatever the same frame draws next (photo, if requested) —
+  // reOrderFilters below is the only other writer, and it always runs before any encoder-target draw
+  // that needs the primary/filtered texture, so this is never stale when read.
+  private var lastTexId: Int = -1
 
   fun initGl(context: Context, encoderWidth: Int, encoderHeight: Int, previewWidth: Int, previewHeight: Int) {
     this.context = context
@@ -85,6 +96,27 @@ class MainRender {
       flipStreamHorizontal, viewPort)
   }
 
+  /**
+   * GPX R41 — draws the second camera source's own (unfiltered) texture into whatever surface is
+   * currently current, instead of the primary/filtered one drawScreenEncoder above samples.
+   * Restores screenRender's texId to [lastTexId] before returning, so a later same-frame draw call
+   * that relies on the filter chain's output (photo) is unaffected by this having run.
+   *
+   * @return false if the secondary source was never initialized (nothing to draw from) — the
+   * caller falls back to [drawScreenEncoder] in that case.
+   */
+  fun drawScreenEncoderFromSecondary(
+    width: Int, height: Int, isPortrait: Boolean, rotation: Int,
+    flipStreamVertical: Boolean, flipStreamHorizontal: Boolean, viewPort: ViewPort?
+  ): Boolean {
+    val secondary = secondaryCameraRender ?: return false
+    screenRender.setTexId(secondary.texId)
+    screenRender.drawEncoder(width, height, isPortrait, rotation, flipStreamVertical,
+      flipStreamHorizontal, viewPort)
+    screenRender.setTexId(lastTexId)
+    return true
+  }
+
   fun drawScreenPreview(
     width: Int, height: Int, isPortrait: Boolean,
     mode: AspectRatioMode, rotation: Int, flipStreamVertical: Boolean, flipStreamHorizontal: Boolean,
@@ -96,6 +128,9 @@ class MainRender {
   fun release() {
     running.set(false)
     cameraRender.release()
+    // GPX R41 — the second source, if one was ever brought up.
+    secondaryCameraRender?.release()
+    secondaryCameraRender = null
     for (baseFilterRender in filterRenders) baseFilterRender.release()
     filterRenders.clear()
     screenRender.release()
@@ -146,6 +181,7 @@ class MainRender {
     }
     val texId = if (filters.isEmpty()) cameraRender.texId else filters[filters.size - 1].texId
     screenRender.setTexId(texId)
+    lastTexId = texId
   }
 
   fun setFilterAction(filterAction: FilterAction, position: Int, baseFilterRender: BaseFilterRender) {
@@ -184,6 +220,43 @@ class MainRender {
 
   fun getSurface(): Surface {
     return cameraRender.surface
+  }
+
+  /**
+   * GPX R41 — whether the second camera source has been brought up. Callers use this to decide
+   * whether there is anything to update/draw from it this frame, and a target's own source
+   * selector falls back to the primary source when this is false (the second source was never
+   * actually attached, even though a target asked for it).
+   */
+  fun hasSecondarySource(): Boolean = secondaryCameraRender != null
+
+  /**
+   * GPX R41 — brings up the second camera input's GL resources (its own external-OES texture,
+   * SurfaceTexture and FBO) if they do not exist yet. Must run on the thread already holding the
+   * current EGL context — the same requirement [initGl] itself has. Idempotent: a second call is a
+   * no-op, matching [getSurfaceTexture]'s "call after start render" contract for the primary one.
+   */
+  fun initSecondarySource(context: Context) {
+    if (secondaryCameraRender != null) return
+    val render = CameraRender()
+    render.initGl(width, height, context, previewWidth, previewHeight)
+    secondaryCameraRender = render
+  }
+
+  /** GPX R41 — [getSurfaceTexture] counterpart for the second source. Null until [initSecondarySource] runs. */
+  fun getSecondarySurfaceTexture(): SurfaceTexture? = secondaryCameraRender?.surfaceTexture
+
+  /** GPX R41 — [getSurface] counterpart for the second source. Null until [initSecondarySource] runs. */
+  fun getSecondarySurface(): Surface? = secondaryCameraRender?.surface
+
+  /** GPX R41 — [updateFrame] counterpart for the second source. No-op if never initialized. */
+  fun updateSecondarySource() {
+    secondaryCameraRender?.updateTexImage()
+  }
+
+  /** GPX R41 — [drawSource] counterpart for the second source. No-op if never initialized. */
+  fun drawSecondarySource() {
+    secondaryCameraRender?.draw()
   }
 
   fun setCameraRotation(rotation: Int) {

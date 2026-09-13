@@ -227,6 +227,24 @@ open class OpenGlView : SurfaceView, GlInterface, OnFrameAvailableListener, Surf
     // GPX fork change 10 — no separate preview-draw branch to observe here either, so no-op.
     override fun setPreviewFrameListener(listener: Runnable?) = Unit
 
+    // GPX R41 — view-based rendering has one render pipeline and one SurfaceView, with no second
+    // one to bring up. Unlike setStreamOverlay/setRecordOverlay/setPreviewFrameListener above,
+    // this throws rather than silently no-opping: those return Unit and simply drop a plane nothing
+    // else depends on, but a caller of this method wants an object back to open a real camera into.
+    // Returning some object that nothing ever updates would look like it works while silently
+    // dropping every frame from the second camera, which is worse than a loud, immediate failure.
+    override fun getSecondarySurfaceTexture(): SurfaceTexture =
+        throw UnsupportedOperationException("OpenGlView has no second camera source; use GlStreamInterface")
+
+    override fun getSecondarySurface(): Surface =
+        throw UnsupportedOperationException("OpenGlView has no second camera source; use GlStreamInterface")
+
+    // GPX R41 — there is one render pipeline here, always the "primary" one; a caller may still set
+    // these expecting the interface's default behavior, so no-op rather than throw.
+    override fun setStreamSource(source: GlCameraSource) = Unit
+
+    override fun setRecordSource(source: GlCameraSource) = Unit
+
     override fun takePhoto(takePhotoCallback: TakePhotoCallback) {
         this.takePhotoCallback = takePhotoCallback
         this.photoWidth = encoderWidth

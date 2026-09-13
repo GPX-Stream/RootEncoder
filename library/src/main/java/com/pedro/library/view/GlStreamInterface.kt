@@ -67,6 +67,11 @@ private const val STOP_RELEASE_AWAIT_MS = 300L
 // instead of being swallowed. See the GPX R34 comment on start() for why.
 private const val START_INIT_AWAIT_MS = 5000L
 
+// GPX R41 — bound for the lazy secondary-source GL init task ensureSecondarySourceInitialized()
+// queues. Same value and same reasoning as START_INIT_AWAIT_MS: this does the same kind of work
+// (allocate an external-OES texture, a SurfaceTexture and an FBO) on the same GL thread.
+private const val SECONDARY_SOURCE_INIT_AWAIT_MS = 5000L
+
 /**
  * Created by pedro on 14/3/22.
  */
@@ -92,6 +97,12 @@ class GlStreamInterface(private val context: Context): OnFrameAvailableListener,
   // the caller's thread, read on the GL render thread.
   @Volatile
   private var previewFrameListener: Runnable? = null
+  // GPX R41 — which camera source the stream/record targets draw their base picture from. Plain
+  // vars, matching this file's existing convention for simple mode toggles set from the caller's
+  // thread and read on the GL thread (muteVideo, the flip flags) rather than a new synchronization
+  // scheme.
+  private var streamSource: GlCameraSource = GlCameraSource.PRIMARY
+  private var recordSource: GlCameraSource = GlCameraSource.PRIMARY
 
   private var encoderWidth = 0
   private var encoderHeight = 0
@@ -211,6 +222,62 @@ class GlStreamInterface(private val context: Context): OnFrameAvailableListener,
   // GPX fork change 10 — the preview liveness signal. Same no-op-on-OpenGlView caveat applies.
   override fun setPreviewFrameListener(listener: Runnable?) {
     previewFrameListener = listener
+  }
+
+  // GPX R41 — the working implementation of the second camera source. OpenGlView has no second
+  // render pipeline to bring up, so it throws instead (see its own override).
+  override fun getSecondarySurfaceTexture(): SurfaceTexture {
+    ensureSecondarySourceInitialized()
+    return mainRender.getSecondarySurfaceTexture()
+      ?: throw IllegalStateException("GlStreamInterface: secondary source failed to initialize")
+  }
+
+  override fun getSecondarySurface(): Surface {
+    ensureSecondarySourceInitialized()
+    return mainRender.getSecondarySurface()
+      ?: throw IllegalStateException("GlStreamInterface: secondary source failed to initialize")
+  }
+
+  override fun setStreamSource(source: GlCameraSource) {
+    streamSource = source
+  }
+
+  override fun setRecordSource(source: GlCameraSource) {
+    recordSource = source
+  }
+
+  /**
+   * GPX R41 — brings up the second camera source's GL resources on the GL thread the first time a
+   * caller asks for its SurfaceTexture/Surface, mirroring the timeout-and-throw pattern start()
+   * already uses for the primary source's own GL init (see the GPX R34 comment there for why a
+   * bound-and-throw is used instead of a silent, possibly-endless wait).
+   */
+  private fun ensureSecondarySourceInitialized() {
+    val exec = executor ?: throw IllegalStateException(
+      "GlStreamInterface: start() must be called before requesting the secondary source"
+    )
+    val task = exec.submit {
+      if (surfaceManager.makeCurrent()) {
+        mainRender.initSecondarySource(context)
+      }
+    }
+    try {
+      task.get(SECONDARY_SOURCE_INIT_AWAIT_MS, TimeUnit.MILLISECONDS)
+    } catch (e: TimeoutException) {
+      throw IllegalStateException(
+        "GlStreamInterface: secondary source GL init did not complete within " +
+          "${SECONDARY_SOURCE_INIT_AWAIT_MS}ms", e
+      )
+    } catch (e: ExecutionException) {
+      throw IllegalStateException(
+        "GlStreamInterface: secondary source GL init failed", e.cause ?: e
+      )
+    } catch (e: InterruptedException) {
+      Thread.currentThread().interrupt()
+      throw IllegalStateException(
+        "GlStreamInterface: interrupted waiting for secondary source GL init", e
+      )
+    }
   }
 
   override fun isRunning(): Boolean = running.get()
@@ -419,6 +486,12 @@ class GlStreamInterface(private val context: Context): OnFrameAvailableListener,
       if (!surfaceManager.makeCurrent()) return
       mainRender.updateFrame()
       mainRender.drawSource()
+      // GPX R41 — the second camera source, if one has been brought up. No-op otherwise, so a
+      // consumer that never calls getSecondarySurfaceTexture/getSecondarySurface pays nothing here.
+      if (mainRender.hasSecondarySource()) {
+        mainRender.updateSecondarySource()
+        mainRender.drawSecondarySource()
+      }
     }
     val timestamp = glTimestamp.getTimestamp(surfaceTexture.timestamp, clockTimestamp)
     val limitFps = fpsLimiter.limitFPS(timestamp)
@@ -441,10 +514,17 @@ class GlStreamInterface(private val context: Context): OnFrameAvailableListener,
       val w = if (muteVideo) 0 else encoderWidth
       val h = if (muteVideo) 0 else encoderHeight
       if (surfaceManagerEncoder.makeCurrent()) {
-        mainRender.drawScreenEncoder(w, h, orientation, streamOrientation,
-          isStreamVerticalFlip, isStreamHorizontalFlip, streamViewPort)
+        // GPX R41 — draw from the stream target's own selected source, falling back to the
+        // primary/filtered texture if SECONDARY was requested but never actually attached.
+        val drewFromSecondary = streamSource == GlCameraSource.SECONDARY &&
+          mainRender.drawScreenEncoderFromSecondary(w, h, orientation, streamOrientation,
+            isStreamVerticalFlip, isStreamHorizontalFlip, streamViewPort)
+        if (!drewFromSecondary) {
+          mainRender.drawScreenEncoder(w, h, orientation, streamOrientation,
+            isStreamVerticalFlip, isStreamHorizontalFlip, streamViewPort)
+        }
         // GPX R11 — drawn over the frame content into this surface only. The record encoder branch
-        // renders from the same filtered texture but draws its own recordOverlayRender instead
+        // renders from its own selected source but draws its own recordOverlayRender instead
         // (GPX fork change 8), not this one.
         streamOverlayRender.draw(context)
         surfaceManagerEncoder.setPresentationTime(timestamp)
@@ -456,8 +536,16 @@ class GlStreamInterface(private val context: Context): OnFrameAvailableListener,
       val w = if (muteVideo) 0 else encoderRecordWidth
       val h = if (muteVideo) 0 else encoderRecordHeight
       if (surfaceManagerEncoderRecord.makeCurrent()) {
-        mainRender.drawScreenEncoder(w, h, orientation, streamOrientation,
-          isStreamVerticalFlip, isStreamHorizontalFlip, streamViewPort)
+        // GPX R41 — as the stream block above, but for the record target's own selected source.
+        // This is the primary use case Decision 4 names: the record route pointed at its own
+        // independent camera, split from whatever the stream is watching.
+        val drewFromSecondary = recordSource == GlCameraSource.SECONDARY &&
+          mainRender.drawScreenEncoderFromSecondary(w, h, orientation, streamOrientation,
+            isStreamVerticalFlip, isStreamHorizontalFlip, streamViewPort)
+        if (!drewFromSecondary) {
+          mainRender.drawScreenEncoder(w, h, orientation, streamOrientation,
+            isStreamVerticalFlip, isStreamHorizontalFlip, streamViewPort)
+        }
         // GPX fork change 8 — this destination's own overlay plane, independent of streamOverlayRender.
         recordOverlayRender.draw(context)
         // Fix: same timestamp fix for the dedicated record surface

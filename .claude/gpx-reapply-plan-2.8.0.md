@@ -517,6 +517,38 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       - [ ] **R27, the send-job restart.** `BaseSender.start()` now cancels and joins any previous
             job before starting, on every `startStream`. Expected outcome is no visible change; a
             connect that hangs or a reconnect that does not resume is the thing to look for.
+- [x] R41 — a second, independent camera source (`gpxstream-app` issue #272, Decision 4).
+      Andy's ruling (2026-09-13) drops the bandwidth/thermal bench-test gate this work was
+      previously parked behind; ordinary bench QA applies once it exists, same as any other
+      slice. Full detail lives in `.claude/gpx-branch-policy.md`'s "Verification status"
+      section (the one home for this claim); summary here for the checklist record:
+      - `Camera2ApiManager` needed no new open/close code — every piece of its state
+        (`openGeneration`, `captureSessionExecutor`, `cameraDevice`) was already per-instance,
+        so two independent instances already run fully isolated, each with its own bounded
+        open and generation guard (R23/R36/R37/R38) for free. What's new is
+        `Camera2ApiManager.canOpenConcurrently(context, cameraId, otherCameraId)`, backed by
+        `CameraManager.getConcurrentCameraIds()` (API 30+) — a real per-device HAL constraint,
+        never assumed.
+      - `MainRender`/`GlStreamInterface` gain a second, lazily-initialized GL input pipeline;
+        `GlInterface` gains `getSecondarySurfaceTexture()`/`getSecondarySurface()` and
+        `setStreamSource(GlCameraSource)`/`setRecordSource(GlCameraSource)`, mirroring fork
+        change 8's per-target-setter shape. A GL-side texture rebind only — zero edits to
+        `StreamBase.kt`, no `prepareVideo`/encoder/muxer path touched. `OpenGlView` throws on
+        the two new getters (no second pipeline to bring up) and no-ops the two setters.
+      - New file: `library/src/main/java/com/pedro/library/view/GlCameraSource.kt` (the
+        `PRIMARY`/`SECONDARY` enum `setStreamSource`/`setRecordSource` take). No upstream code
+        to mark against, same as R33's two test files.
+      - Preview, multi-preview and photo capture are deliberately unchanged — Decision 4 names
+        only the stream and record targets, so those three keep drawing the primary/filtered
+        pipeline regardless of `setRecordSource`. Noted as a known, deliberately out-of-scope
+        asymmetry with fork change 8/9's overlay-follows-record precedent, not a gap in this
+        item.
+      - `gradlew clean assembleDebug test` passes across every module and the sample app.
+        Marker check: `git grep -n "GPX R41"` finds all 26 sites across the 5 changed files
+        plus the 1 new file. Not bench-verified — no device access this session; the next bench
+        pass needs to check whether the fleet PDT's camera HAL reports a concurrent-capable id
+        combination, and whether the record target's base picture genuinely shows the second
+        camera's own feed independent of the stream target when both are opened together.
 
 ## Correction to R14's scope
 
