@@ -203,11 +203,15 @@ unrelated to R43/R44; it needs its own decision.
 
 ## Implemented
 
-Cherry-picked with `-x` onto `feat/adopt-upstream-audio-csd-srt-retransmit` (a worktree off
-`gpx-2.8` @ `ffba4217d`), in order: `54b196108` (R43), then `562973772` (R44). Both applied with no
-conflicts; `AudioEncoder.java`, `SrtClient.kt` and `SrtStreamClient.kt` auto-merged. The GPX
-marker inventory (`git grep -n "GPX" -- "*.kt" "*.java"`, line numbers stripped) is identical
-before and after: 216 lines, no marker dropped or added. No inline `GPX R43`/`GPX R44` markers,
+Cherry-picked with `-x` onto `feat/adopt-upstream-audio-csd-srt-retransmit`, in order:
+`54b196108` (R43), then `562973772` (R44). The branch started as a worktree off `gpx-2.8` @
+`ffba4217d` and was rebased onto `f5b2a2315` (R42, merged meanwhile) before its PR. Both
+cherry-picks applied with no conflicts, and `AudioEncoder.java`, `SrtClient.kt` and
+`SrtStreamClient.kt` auto-merged. R42 touches none of R43/R44's source files. The rebase
+conflicted only in this repo's two docs, where both branches appended after R41; both sides were
+kept, R42 first. The GPX marker inventory (`git grep -n "GPX" -- "*.kt" "*.java"`, line numbers
+stripped) is identical before and after, against both bases: 216 lines at `ffba4217d`, 225 at
+`f5b2a2315`. No marker was dropped or added. No inline `GPX R43`/`GPX R44` markers,
 following the convention for adopted upstream code (R39/R40); both are tracked in
 `.claude/gpx-reapply-plan-2.8.0.md`. `gradlew clean assembleDebug test` passes across every module
 and the sample app. No tag cut and no pin move, per standing policy.
