@@ -79,6 +79,9 @@ class WhipStreamClient(
 
   override fun getItemsInCache(): Int = whipClient.getItemsInCache()
 
+  /** GPX R42 — silence since the server's last media-plane (RTCP) packet; see WhipClient. */
+  override fun getInboundSilenceMs(): Long = whipClient.getInboundSilenceMs()
+
   override fun getQueueBytesOut(): Long = whipClient.getQueueBytesOut()
 
   override fun getSentAudioFrames(): Long = whipClient.sentAudioFrames
