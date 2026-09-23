@@ -19,6 +19,7 @@ import com.pedro.rtsp.utils.RtpConstants
 import com.pedro.whip.dtls.DtlsClient
 import com.pedro.whip.dtls.DtlsConnection
 import com.pedro.whip.dtls.DtlsTransport
+import com.pedro.whip.utils.InboundSilenceTracker
 import com.pedro.whip.utils.Network
 import com.pedro.whip.webrtc.CandidateType
 import com.pedro.whip.webrtc.CommandsManager
@@ -76,6 +77,9 @@ class WhipClient(private val connectChecker: ConnectChecker) {
     // are the server's RTCP feedback, so their presence shows the ingest is receiving the stream
     // rather than only holding the ICE session.
     private val mediaPlaneIn = AtomicLong(0)
+    // GPX R42 — when that media-plane feedback last arrived, read by getInboundSilenceMs(). A count
+    // alone cannot show that the feedback has stopped.
+    internal val inboundSilence = InboundSilenceTracker()
     private val commandsManager = CommandsManager()
     private val whipSender: WhipSender = WhipSender(connectChecker, commandsManager)
     private var url: String? = null
@@ -444,6 +448,8 @@ class WhipClient(private val connectChecker: ConnectChecker) {
                     // with the server key at index 1.
                     whipSender.setCrypto(if (weAreServer) cryptoProperties[1] else cryptoProperties[0])
                     whipSender.start()
+                    // GPX R42 — media is flowing from here, so start the inbound-silence clock.
+                    inboundSilence.start()
                 }.exceptionOrNull()
                 if (error != null) {
                     Log.e(TAG, "connection error", error)
@@ -470,6 +476,7 @@ class WhipClient(private val connectChecker: ConnectChecker) {
                 // GPX R14 — RTP and RTCP are not consumed by a send-only publisher, but counted:
                 // feedback arriving here means the server is receiving the stream. Log throttled.
                 val n = mediaPlaneIn.incrementAndGet()
+                inboundSilence.onInbound() // GPX R42
                 if (n <= 5L || n % 50L == 0L) Log.i(TAG, "media-plane in from server: $n")
             }
             else -> {
@@ -535,6 +542,10 @@ class WhipClient(private val connectChecker: ConnectChecker) {
         }
         job?.cancelAndJoin()
         job = null
+        // GPX R42 — cleared on both a stop and a retry's teardown, after the connect job has joined
+        // so it cannot restart the clock behind this. isStreaming stays true through a retry, so
+        // without this the retry window would report the old session's silence.
+        inboundSilence.reset()
         scope.cancel()
         scope = CoroutineScope(Dispatchers.IO)
     }
@@ -600,6 +611,14 @@ class WhipClient(private val connectChecker: ConnectChecker) {
     fun getItemsInCache(): Int = whipSender.getItemsInCache()
 
     fun getQueueBytesOut(): Long = whipSender.getQueueBytesOut()
+
+    /**
+     * GPX R42 — milliseconds since the server last sent a media-plane packet (its RTCP feedback on
+     * the stream), or -1 when not streaming or not yet established (including a retry's backoff).
+     * Counted from session establishment until the first packet arrives. Grows once the ingest
+     * stops receiving the stream, which an outbound bytes-sent counter cannot show.
+     */
+    fun getInboundSilenceMs(): Long = if (!isStreaming) -1L else inboundSilence.silenceMs()
 
     /**
      * @param factor values from 0.1f to 1f

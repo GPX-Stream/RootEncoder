@@ -53,7 +53,9 @@ abstract class StreamBaseClient {
   abstract fun getItemsInCache(): Int
   /**
    * GPX R7 — milliseconds since the last inbound packet was read from the transport socket. SRT
-   * reports a real value; protocols that do not track this return -1.
+   * and WHIP report a real value (GPX R42 for WHIP, counting only the server's media-plane RTCP,
+   * not ICE traffic); protocols that do not track this return -1, as does any protocol before its
+   * session is established.
    */
   open fun getInboundSilenceMs(): Long = -1L
   abstract fun getQueueBytesOut(): Long

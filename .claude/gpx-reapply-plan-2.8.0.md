@@ -549,6 +549,32 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
         pass needs to check whether the fleet PDT's camera HAL reports a concurrent-capable id
         combination, and whether the record target's base picture genuinely shows the second
         camera's own feed independent of the stream target when both are opened together.
+- [x] R42 — a WHIP inbound-silence signal (`gpxstream-app` issue #240, authorized by Andy
+      2026-09-22). R14's `mediaPlaneIn` counter already counted the server's media-plane packets
+      — for a send-only publisher, its RTCP feedback on the stream — but nothing read it, and a
+      count cannot show that the feedback has stopped. `StreamBaseClient.getInboundSilenceMs()`
+      (R7) therefore returned its -1 stub for WHIP, so the consumer's liveness watchdog could
+      only see local bytes leaving the device, never whether the ingest was still receiving them.
+      - New `whip/src/main/java/com/pedro/whip/utils/InboundSilenceTracker.kt`: the time of the
+        last inbound media-plane packet, on `TimeUtils.getCurrentTimeMillis()` (elapsed realtime,
+        so a wall-clock change cannot fake a silence — unlike R7's `System.currentTimeMillis()`).
+      - `WhipClient`: stamps the tracker beside `mediaPlaneIn`'s increment in `handleMessages`
+        (the 128..191 range only; STUN and DTLS traffic proves the ICE session is held, not that
+        media is arriving), starts it at DTLS success the way R7 starts SRT's at handshake
+        completion, and clears it at the end of `disconnect()` on both the stop and the retry
+        path. `getInboundSilenceMs()` returns -1 while not streaming or not yet established.
+      - `WhipStreamClient.getInboundSilenceMs()` delegates to it, which covers both `WhipStream`
+        and R33's `WhipTransport`. `StreamBaseClient`'s R7 KDoc updated to name WHIP.
+      - Deliberately no fork-side dead-link watchdog of the kind R7 gives SRT: the value is only
+        exposed, and the consumer judges it. The negotiated offer carries `a=rtcp-mux` and no
+        `a=rtcp-fb`, so the server's feedback is plain RTCP reports at their own interval, and the
+        consumer's threshold is derived from that interval (`gpxstream-app` issue #240).
+      - Tests: `whip/src/test/java/com/pedro/whip/InboundSilenceTest.kt` — the tracker's
+        arithmetic, and that `handleMessages` stamps on an RTP/RTCP first byte but not on STUN
+        or DTLS. `gradlew clean assembleDebug test` passes across every module and the sample
+        app. Not bench-verified: the bench needs to confirm the Millicast ingest's RTCP cadence
+        (the throttled `media-plane in from server: N` logcat line gives it) and that a silence
+        is reported when the ingest stops receiving.
 
 ## Correction to R14's scope
 

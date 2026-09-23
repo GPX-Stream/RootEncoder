@@ -224,3 +224,12 @@ check, named explicitly because nothing here can confirm them: whether the fleet
 actually reports a concurrent-capable id combination via `getConcurrentCameraIds()`, and whether
 the record target's base picture genuinely shows the second camera's own feed, independent of
 whatever the stream target is drawing, when both are opened together.
+
+**R42 — a WHIP inbound-silence signal (consumer issue #240).** `WhipStreamClient.getInboundSilenceMs()`
+now reports milliseconds since the WHIP server last sent a media-plane (RTCP) packet, instead of
+the -1 stub: R14's write-only `mediaPlaneIn` counter gains a last-arrival time
+(`whip/src/main/java/com/pedro/whip/utils/InboundSilenceTracker.kt`). Read-only exposure — no
+fork-side watchdog acts on it; the consumer judges it. `gradlew clean assembleDebug test` passes
+across every module and the sample app, including the new `InboundSilenceTest`. Not
+bench-verified: the next bench pass needs the Millicast ingest's actual RTCP cadence on a live WHIP
+publish, and a silence reported when the ingest stops receiving.
