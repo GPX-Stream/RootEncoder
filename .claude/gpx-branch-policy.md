@@ -233,3 +233,24 @@ fork-side watchdog acts on it; the consumer judges it. `gradlew clean assembleDe
 across every module and the sample app, including the new `InboundSilenceTest`. Not
 bench-verified: the next bench pass needs the Millicast ingest's actual RTCP cadence on a live WHIP
 publish, and a silence reported when the ingest stops receiving.
+
+**R43, R44 (2026-09-22): two more upstream commits cherry-picked ahead of the next full sync.**
+Both come from `pedro/master` past `620d05ffb`, and both applied with no conflicts and no GPX-marked
+line in any hunk.
+
+- **R43 (`54b196108`):** `AudioEncoder` stops forwarding the MediaCodec codec-config buffer as an
+  encoded audio frame. Previously it went out as a bogus audio unit at every stream start, on
+  every protocol, and could land in a recording on a cold start or an audio encoder restart.
+- **R44 (`562973772`):** SRT retransmits are capped by a token bucket (default 25% of the
+  estimated media rate, 0.5 s burst). Packets go oldest-first, and packets that would arrive after
+  their latency, or repeat a recent retransmit, are skipped. This stops a receiver's repeated NAK
+  reports from amplifying loss on a bottlenecked uplink.
+
+Full comparison, including the libsrt default comparison and whether each reaches the consumer, in
+`.claude/upstream-sync-2026-09-22-analysis.md`. `gradlew clean assembleDebug test` passes across
+every module and the sample app. No tag cut, no pin move. Not bench-verified. The next bench pass
+should:
+
+- play a clip cut from the start of a cold-started recording in Chrome;
+- stream SRT under induced loss or a throttled uplink and watch for frame drops and recovery
+  after a short outage.

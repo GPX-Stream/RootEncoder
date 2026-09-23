@@ -575,6 +575,46 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
         app. Not bench-verified: the bench needs to confirm the Millicast ingest's RTCP cadence
         (the throttled `media-plane in from server: N` logcat line gives it) and that a silence
         is reported when the ingest stops receiving.
+- [x] R43 — cherry-picked ahead of the next full sync: upstream `54b196108` ("audio: do not
+      forward the codec config buffer as an encoded frame"). `AudioEncoder.checkBuffer` now
+      returns false for a `BUFFER_FLAG_CODEC_CONFIG` buffer, ahead of `checkValidTimeStamp`.
+      MediaCodec's first audio output is the codec config (for AAC, the 2-byte
+      AudioSpecificConfig). Until now it went downstream as an ordinary frame: a bogus audio unit
+      on every stream start (RTMP, SRT and WHIP alike), and a possible bogus first sample in a
+      recording. For this consumer's `Mpeg2TsMuxerRecordController`, that happens on a cold
+      `startRecord` (a race with the video side reaching `RECORDING`) or on an audio encoder
+      restart mid-recording; a clip transmuxed across that point carries it into the MP4. Safe
+      to drop, because every path the consumer uses builds its audio config from sample rate and
+      channel count, never from this buffer: the RTMP sequence header, the per-frame ADTS header
+      for SRT and TS recording, and the WHIP Opus SDP. It also stops the config buffer seeding
+      `oldTimeStamp`; there is no interaction with R9, which lives in `start()`. Adds
+      upstream's `AudioEncoderCheckBufferTest`. No GPX markers existed on the touched method;
+      cherry-picked clean, no conflicts, no inline `GPX R43` marker (adopted upstream code, same
+      convention as R39/R40). Analysis in `.claude/upstream-sync-2026-09-22-analysis.md`, item 1.
+- [x] R44 — cherry-picked ahead of the next full sync: upstream `562973772` ("srt: limit
+      retransmissions to avoid a NAK-driven retransmit storm"). A receiver that re-reports
+      unrecovered losses every NAK interval (libsrt's live-mode `SRTO_NAKREPORT` does) made
+      `CommandsManager.reSendPackets` resend the same packets repeatedly, which amplifies loss on
+      a bottlenecked uplink. Now:
+      - A token bucket caps retransmits at `retransmitOverheadPercent` (default 25) of an
+        estimated media rate, with a burst of up to 0.5 s of media. Packets go oldest-first.
+      - A packet that cannot arrive before its latency expires is skipped, as is a re-report
+        inside `max(rtt + 4·rttVariance, 20 ms)`.
+      - `setRetransmitOverhead(percent)` sits on `SrtClient` and `SrtStreamClient`; `<= 0`
+        restores the unlimited behavior.
+      - `packetsLostUnique` counts each lost sequence once.
+
+      Touches `CommandsManager.kt` and `DataPacket.kt` (neither had GPX changes), plus
+      `SrtClient.kt` and `SrtStreamClient.kt`. Their GPX R7, R8 and `GPX patch` regions lie
+      outside every hunk, so the cherry-pick applied clean with no conflicts. R7's silence
+      timestamp is stamped before the NAK branch runs, so capping retransmits can only shorten
+      the time between reads. The consumer's `srtLatency` feeds the cap (expiry skip, resend-gate
+      ceiling, burst floor) as milliseconds, which is the unit it arrives in.
+      `setRetransmitOverhead` is not exposed on `GenericStreamClient`, so the consumer runs at
+      the default 25% until a passthrough is added as its own change. Adds upstream's
+      `CommandsManagerTest`. No inline `GPX R44` marker (same convention as R39/R40).
+      Analysis, including the libsrt comparison, in
+      `.claude/upstream-sync-2026-09-22-analysis.md`, item 2.
 
 ## Correction to R14's scope
 
