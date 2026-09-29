@@ -539,10 +539,10 @@ abstract class StreamBase(
     // GPX patch — isOnPreview flips only once the sources actually started. stopSources() reads it
     // whether to stop the video source, so setting it first meant a failed start left the flag true
     // and the source unstoppable.
+    // GPX R45 — glInterface.start() is idempotent and serialized (GlStartGate), and the video-source
+    // check-plus-start is serialized by startVideoSourceIfNeeded(); this call site takes no other lock.
     if (!glInterface.isRunning) glInterface.start()
-    if (!videoSource.isRunning()) {
-      videoSource.start(glInterface.surfaceTexture)
-    }
+    startVideoSourceIfNeeded()
     isOnPreview = true
     glInterface.attachPreview(surface)
     glInterface.setPreviewResolution(width, height)
@@ -777,10 +777,9 @@ abstract class StreamBase(
    */
   fun warmSources() {
     if (isStreaming || isOnPreview) return
+    // GPX R45 — same serialization as startPreview: takes only the video-source start lock.
     if (!glInterface.isRunning) glInterface.start()
-    if (!videoSource.isRunning()) {
-      videoSource.start(glInterface.surfaceTexture)
-    }
+    startVideoSourceIfNeeded()
   }
 
   /**
@@ -821,6 +820,32 @@ abstract class StreamBase(
   private val lifecycleLock = Any()
 
   /**
+   * GPX R45 — serializes the video source's check-plus-start. [startPreview] (Main thread),
+   * [warmSources] and [startSources] (record or engine thread) each asked `isRunning()` and then
+   * called `start()`, so two of them arriving together could both open the camera.
+   *
+   * **Lock order, strictly one-way:** [lifecycleLock] may be held when this lock is taken
+   * ([startSources] does), never the reverse. [startPreview] and [warmSources] take only this lock
+   * and never [lifecycleLock]. Nothing that holds this lock waits on [lifecycleLock] or on
+   * GlStreamInterface's start/stop gate: the only things run under it are `videoSource.isRunning()`,
+   * `glInterface.surfaceTexture` and `videoSource.start(...)`, which is the operation being serialized.
+   * A waiter on Main is held for at most the camera-open bound (3 s, R23), the same as it would be
+   * as the only caller. This class invokes no listener itself while holding it, but
+   * `videoSource.start()` can: Camera2ApiManager reports `onCameraChanged` and (on an abandoned open)
+   * `onCameraError` on the calling thread, so those run under this lock. A callback that re-enters on
+   * the same thread is fine (monitors are reentrant); one that hands work to another thread which then
+   * needs this lock waits until the start returns, which is bounded. Stop paths deliberately do not
+   * take it; see the R45 record.
+   */
+  private val videoSourceStartLock = Any()
+
+  private fun startVideoSourceIfNeeded() = synchronized(videoSourceStartLock) {
+    if (!videoSource.isRunning()) {
+      videoSource.start(glInterface.surfaceTexture)
+    }
+  }
+
+  /**
    * Idempotent and transactional.
    *
    * Idempotent so a caller does not have to infer from a consumer flag whether the sources are
@@ -837,10 +862,10 @@ abstract class StreamBase(
     if (sourcesRunning) return
     sourcesRunning = true
     try {
+      // GPX R45 — lifecycleLock is already held here; startVideoSourceIfNeeded() takes
+      // videoSourceStartLock inside it, the one permitted nesting order.
       if (!glInterface.isRunning) glInterface.start()
-      if (!videoSource.isRunning()) {
-        videoSource.start(glInterface.surfaceTexture)
-      }
+      startVideoSourceIfNeeded()
       audioSource.start(getMicrophoneData)
       val startTs = TimeUtils.getCurrentTimeMicro()
       videoEncoder.start(startTs)
