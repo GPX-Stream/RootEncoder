@@ -643,8 +643,15 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       nests them). `startPreview` and `warmSources` take only `videoSourceStartLock`. The GL gate is
       taken by `start()`/`stop()` and is never held while calling into `StreamBase`; the GL
       executor thread never takes it. Nothing holding the gate or `videoSourceStartLock` waits on
-      `lifecycleLock`. Neither new lock is held while invoking an app listener or error callback.
-      The one call out is `videoSource.start()`, which is the operation being serialized.
+      `lifecycleLock`. The gate is never held while invoking an app callback. **`videoSourceStartLock`
+      is not fully clear of them**, checked in `Camera2ApiManager.openCameraId`: `onCameraOpened`,
+      `onCameraDisconnected` and the open-failed `onCameraError` fire on the camera's own handler
+      thread (`onCameraOpened` after the open latch counts down), so they run outside the lock. But
+      `onCameraChanged` (after a successful open) and the abandoned-open `onCameraError` fire on the
+      calling thread, i.e. inside `videoSource.start()` and so under `videoSourceStartLock`
+      (and, from `startSources`, `lifecycleLock` as before R45). A same-thread re-entry is safe; a
+      callback that waits on another thread which needs the lock is stalled until the start returns
+      (bounded). Nothing in this library does that.
       **Main-thread cost.** Main already blocked in `start()` for the whole GL init (up to 5 s, plus
       the 0.3 s prior-release wait) as the only caller; a waiter now waits at most that long for the
       winner. A Main waiter on `videoSourceStartLock` waits at most the 3 s camera-open bound (R23).
@@ -658,7 +665,8 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
         `isRunning` guard. Behaviour change: while the GL is running it is now a no-op instead of a
         restart. Neither restarts a live GL on purpose, and `gpxstream-app` uses `StreamBase` only.
       - Video-source *stop* paths (`stopPreview`'s `videoSource.stop()`, `stopSourcesImp`) do not
-        take `videoSourceStartLock`; a stop racing a start is left as it was before R45 (I did not
+        take `videoSourceStartLock`, so a `stopPreview()` racing a `videoSource.start()` mid-camera-open
+        is unchanged by R45 (a named gap); a stop racing a start is left as it was before R45 (I did not
         verify how far R23's generation guard covers it), and making Main wait behind a camera open
         on stop was not asked for. `changeVideoSource` is a
         swap, not a check-then-start, and is untouched.

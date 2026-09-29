@@ -830,8 +830,12 @@ abstract class StreamBase(
    * GlStreamInterface's start/stop gate: the only things run under it are `videoSource.isRunning()`,
    * `glInterface.surfaceTexture` and `videoSource.start(...)`, which is the operation being serialized.
    * A waiter on Main is held for at most the camera-open bound (3 s, R23), the same as it would be
-   * as the only caller. No app callback (listener, error callback) is invoked by this class while
-   * holding it. Stop paths deliberately do not take it; see the R45 record.
+   * as the only caller. This class invokes no listener itself while holding it, but
+   * `videoSource.start()` can: Camera2ApiManager reports `onCameraChanged` and (on an abandoned open)
+   * `onCameraError` on the calling thread, so those run under this lock. A callback that re-enters on
+   * the same thread is fine (monitors are reentrant); one that hands work to another thread which then
+   * needs this lock waits until the start returns, which is bounded. Stop paths deliberately do not
+   * take it; see the R45 record.
    */
   private val videoSourceStartLock = Any()
 
