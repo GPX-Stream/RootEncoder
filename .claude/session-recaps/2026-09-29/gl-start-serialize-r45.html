@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<script type="text/markdown" id="recap">
+# Serialize GL start and video-source start — GPX R45
+
+**Outcome:** fixed the race behind two bad cold boots on device 74762 (2026-09-23, 2026-09-26), where
+a preview start and a record start ran at the same time, one `GL init failed`, and the preview
+surface stayed dead. Root fix in the fork, approved by Andy 2026-09-29 (design and the
+video-source option A relayed through the orchestrator). Untagged, no pin move.
+
+## Cause
+
+`GlStreamInterface.running` turns true only at the end of the GL-init task. `startPreview` (Main),
+`warmSources` and `startSources` each did `if (!glInterface.isRunning) glInterface.start()`. Two
+callers in that window both called `start()`, which is not re-entrant: the second `shutdownNow()`s
+the first's executor and rebuilds the EGL manager, killing the first caller's init. The same shape
+sat one line later on `videoSource.isRunning()` / `videoSource.start()`.
+
+## Change
+
+- `GlStartGate` (new, pure Kotlin): one monitor across `GlStreamInterface.start()` and `stop()`;
+  `start()` returns at once if the GL is already running. A loser waits, then reuses the winner's
+  GL. A failed winner leaves `running` false, so the next caller retries and R34 still throws on a
+  genuine failure. `stop()` shares the monitor, closing the stop-during-init hole too.
+- `StreamBase.startVideoSourceIfNeeded()` under `videoSourceStartLock`, used by the three sites.
+- Lock order: `lifecycleLock` then `videoSourceStartLock`, never the reverse. Full record, and the
+  knowingly-untouched list, in `.claude/gpx-reapply-plan-2.8.0.md` (R45).
+
+## Verified vs not
+
+- Unit-tested: the gate's serialization only (`GlStartGateTest`, 5 cases; the two race cases fail
+  against an unserialized stand-in). `gradlew clean assembleDebug test` passes across every module
+  and the sample app.
+- Code reading only: the real GL bring-up, `StreamBase`'s use of both locks, the lock-order
+  argument. Neither can construct on the plain JVM.
+- Bench: a regression pass only. The race is intermittent and cannot be forced on demand.
+
+## Open items
+
+- Stop paths for the video source do not take `videoSourceStartLock` (left as before).
+- Consumer pin move onto the merged SHA is the orchestrator's; JitPack check after merge.
+</script>
+</head>
+<body>
+<pre id="fullmd"></pre>
+<footer><span>GPX Stream · Session Recap · 2026-09-29</span><span>Internal — GPX-Stream/RootEncoder</span></footer>
+<script>document.getElementById('fullmd').textContent=document.getElementById('recap').textContent.trim();</script>
+</body>
+</html>
