@@ -139,6 +139,8 @@ class GlStreamInterface(private val context: Context): OnFrameAvailableListener,
   private var streamViewPort: ViewPort? = null
   private var surfaceHandlerThread: HandlerThread? = null
   private val sync = Any()
+  // GPX R45 — serializes start()/stop(); see GlStartGate.
+  private val startStopGate = GlStartGate { running.get() }
   private val glTimestamp = GlTimestamp()
 
   private val sensorRotationManager = SensorRotationManager(context, true, true) { orientation, isPortrait ->
@@ -337,7 +339,11 @@ class GlStreamInterface(private val context: Context): OnFrameAvailableListener,
     this.photoHeight = height
   }
 
-  override fun start() {
+  // GPX R45 — start() and stop() are serialized and start() is idempotent while the GL is running.
+  // See GlStartGate for the race this closes.
+  override fun start() = startStopGate.start { startLocked() }
+
+  private fun startLocked() {
     // GPX R16 — do not touch shared GL state until the previous stop()'s release finished. get() is
     // called unconditionally, not only when the task is unfinished, so an already-failed release is
     // not skipped. Retrying belongs to the caller, not here.
@@ -421,7 +427,10 @@ class GlStreamInterface(private val context: Context): OnFrameAvailableListener,
     }
   }
 
-  override fun stop() {
+  // GPX R45 — shares the gate with start() so a stop cannot land in the middle of a start's init.
+  override fun stop() = startStopGate.stop { stopLocked() }
+
+  private fun stopLocked() {
     running.set(false)
     forceRender.stop()
     surfaceHandlerThread?.quitSafely()

@@ -254,3 +254,14 @@ should:
 - play a clip cut from the start of a cold-started recording in Chrome;
 - stream SRT under induced loss or a throttled uplink and watch for frame drops and recovery
   after a short outage.
+
+**R45 (2026-09-29) — GL start and video-source start are serialized (consumer flight-recorder
+audit, device 74762).** A preview start on Main and a record start on another thread could both call
+`GlStreamInterface.start()` while its init was still running; the second call tore down the first's
+init, giving `GL init failed` and a dead preview. `GlStartGate` now makes `start()`/`stop()` mutually
+exclusive and `start()` idempotent while running, and `StreamBase.startVideoSourceIfNeeded()`
+serializes the camera check-plus-start. Lock order is `lifecycleLock` → `videoSourceStartLock`, never
+the reverse; full record in `.claude/gpx-reapply-plan-2.8.0.md`. `gradlew clean assembleDebug test`
+result is in the PR. Only the gate's serialization logic has a unit test; the rest is code reading
+plus the bench. The race is intermittent, so a bench run is a regression pass, not proof. No tag cut,
+no pin move by this change.

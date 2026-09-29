@@ -615,6 +615,61 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       `CommandsManagerTest`. No inline `GPX R44` marker (same convention as R39/R40).
       Analysis, including the libsrt comparison, in
       `.claude/upstream-sync-2026-09-22-analysis.md`, item 2.
+- [x] R45 — serialize GL start and video-source start (`gpxstream-app` flight-recorder audit of
+      device 74762, two cold boots on 2026-09-23 and 2026-09-26; approved by Andy 2026-09-29).
+      **The bug.** `GlStreamInterface.running` turns true only at the end of the GL-init task. The
+      callers of `start()` — `StreamBase.startPreview` (Main thread), `warmSources`, and
+      `startSources` (record or engine thread) — each did `if (!glInterface.isRunning)
+      glInterface.start()`, and only `startSources` held `lifecycleLock`. When one PrepareSucceeded
+      fires a preview start and a record start together, both passed the check. `start()` is not
+      re-entrant: the second call `shutdownNow()`s the first caller's executor and rebuilds the
+      EGL surface manager and handler thread, killing the first caller's in-flight init. Field
+      result: `GL init failed` on whichever side lost, and a dead preview surface. The same shape
+      existed one step later: both callers then did `if (!videoSource.isRunning())
+      videoSource.start(...)`, which could open the camera twice.
+      **The fix.**
+      - `GlStartGate` (new, `library/.../view/GlStartGate.kt`, pure Kotlin so it is unit-testable)
+        holds one monitor across `GlStreamInterface.start()` and `stop()`. Inside it `start()`
+        returns at once if `running` is already true, so a losing caller waits for the winner's
+        init and then reuses it. If the winner failed, `running` is still false and the waiter
+        makes its own attempt, so R34's throw-on-failure/timeout behaviour is unchanged for every
+        genuine failure. `stop()` shares the monitor, so it cannot land inside a start's init
+        (before: init could set `running = true` after `stop()` cleared it, on a GL context about to
+        be released).
+      - `StreamBase.startVideoSourceIfNeeded()` puts the video-source check-plus-start under
+        `videoSourceStartLock`; the three sites (`startPreview`, `warmSources`, `startSources`)
+        call it.
+      **Lock order, one-way.** `lifecycleLock` → `videoSourceStartLock` (only `startSources`
+      nests them). `startPreview` and `warmSources` take only `videoSourceStartLock`. The GL gate is
+      taken by `start()`/`stop()` and is never held while calling into `StreamBase`; the GL
+      executor thread never takes it. Nothing holding the gate or `videoSourceStartLock` waits on
+      `lifecycleLock`. Neither new lock is held while invoking an app listener or error callback.
+      The one call out is `videoSource.start()`, which is the operation being serialized.
+      **Main-thread cost.** Main already blocked in `start()` for the whole GL init (up to 5 s, plus
+      the 0.3 s prior-release wait) as the only caller; a waiter now waits at most that long for the
+      winner. A Main waiter on `videoSourceStartLock` waits at most the 3 s camera-open bound (R23).
+      `stop()` on Main can wait behind a start in progress, bounded the same way.
+      **Knowingly untouched.**
+      - `addMediaCodecSurface`/`removeMediaCodecSurface` and the record variants submit to
+        `executor?` without the gate. They are single submits to the current executor, and a submit
+        to an executor that a concurrent start replaced is dropped; making them wait would put Main
+        behind GL init for no failure seen in the field. Not widened.
+      - Legacy `DisplayBase` and `FromFileBase` call `glInterface.start()` without the
+        `isRunning` guard. Behaviour change: while the GL is running it is now a no-op instead of a
+        restart. Neither restarts a live GL on purpose, and `gpxstream-app` uses `StreamBase` only.
+      - Video-source *stop* paths (`stopPreview`'s `videoSource.stop()`, `stopSourcesImp`) do not
+        take `videoSourceStartLock`; a stop racing a start is left as it was before R45 (I did not
+        verify how far R23's generation guard covers it), and making Main wait behind a camera open
+        on stop was not asked for. `changeVideoSource` is a
+        swap, not a check-then-start, and is untouched.
+      **Tests.** `GlStartGateTest` (5 cases: two concurrent starts do one real start, a loser does
+      not restart after a winner, a failed winner surfaces and the next caller retries, stop waits
+      for a start in progress, start after stop is fresh). Written first; with an unserialized
+      stand-in the two race cases fail. The real GL bring-up, `StreamBase`'s use of the gate and
+      `videoSourceStartLock`, and the camera are not exercised by any test: the GL classes cannot
+      construct on the plain JVM and `StreamBase` cannot either. Those parts are covered by code
+      reading and the bench regression pass only. The race is intermittent and cannot be forced on
+      demand, so a bench run is a regression pass, not proof. Markers: `git grep -n "GPX R45"`.
 
 ## Correction to R14's scope
 
