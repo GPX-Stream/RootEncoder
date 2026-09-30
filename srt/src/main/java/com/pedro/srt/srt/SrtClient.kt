@@ -24,6 +24,7 @@ import com.pedro.common.ConnectionFailed
 import com.pedro.common.UrlParser
 import com.pedro.common.VideoCodec
 import com.pedro.common.frame.MediaFrame
+import com.pedro.common.TimeUtils
 import com.pedro.common.onMainThread
 import com.pedro.common.socket.base.SocketType
 import com.pedro.common.socket.base.StreamSocket
@@ -70,18 +71,7 @@ class SrtClient(private val connectChecker: ConnectChecker) {
 
   private val TAG = "SrtClient"
 
-  // GPX R8 — handshake retransmit backoff, in milliseconds, and also the socket read timeout during
-  // the handshake, which sets the poll granularity.
-  //
-  // Sending each handshake once and block-reading the whole latency-derived socketTimeout makes one
-  // lost UDP packet cost the entire window, which surfaces as "Poll timed out". Re-knocking fixes
-  // that, and the gap grows rather than staying fixed because two failure modes pull opposite ways.
-  // A cold lost packet wants a fast re-knock, within about 250 ms. A server holding a prior session
-  // after a relaunch releases it during a lull: continuous 250 ms knocking was observed riding an
-  // 11 s window with no response, and the knock that latched was the one after a multi-second
-  // silent gap. Growing the gap covers the lost packet early and provides the quiet windows later.
-  private val HANDSHAKE_RETRANSMIT_MS = 250L
-  private val HANDSHAKE_RETRANSMIT_CAP_MS = 2_000L
+  // GPX R8 — the handshake backoff constants live in HandshakeTimeout.kt, beside the budget they set.
 
   private val validSchemes = arrayOf("srt")
 
@@ -95,7 +85,13 @@ class SrtClient(private val connectChecker: ConnectChecker) {
 
   private var checkServerAlive = false
 
-  // GPX R7 — wall-clock time the last packet was read. A silent UDP blackhole keeps sendto()
+  // GPX R49 — the clock for R7's silence timer and R8's handshake deadline: elapsed realtime, which
+  // only moves forward. They used System.currentTimeMillis, a wall clock the system can step (a
+  // network time sync after the cell radio registers): a forward step over the 5.5 s timeout faked
+  // a dead link, a backward step hid one. A var only so tests can drive time.
+  internal var nowMs: () -> Long = { TimeUtils.getCurrentTimeMillis() }
+
+  // GPX R7 — time (on [nowMs]) the last packet was read. A silent UDP blackhole keeps sendto()
   // succeeding, so the outbound byte counter keeps climbing while the server stops responding and
   // nothing reports a failure. This reads SRT's own control traffic (ACK and KeepAlive arrive
   // sub-second at any latency) rather than ICMP, so a firewall that drops ICMP does not blind it.
@@ -300,13 +296,14 @@ class SrtClient(private val connectChecker: ConnectChecker) {
           socket?.connect()
           commandsManager.loadStartTs()
 
-          // GPX R8 — total knock budget equals the latency-derived socketTimeout the single block-read
-          // used to consume; the retransmits happen inside that same window.
-          val handshakeDeadlineMs = System.currentTimeMillis() + socketTimeout
+          // GPX R8, floored by GPX R48 — total knock budget for both phases: the latency-derived
+          // socketTimeout, but never so short that R8's backoff cannot reach its capped gap.
+          val handshakeBudgetMs = handshakeBudgetMsFor(commandsManager.latency)
+          val handshakeDeadlineMs = nowMs() + handshakeBudgetMs
 
           val response = pollHandshake(handshakeDeadlineMs, "induction") {
             commandsManager.writeHandshake(socket)
-          } ?: throw SocketTimeoutException("Poll timed out (no induction response in ${socketTimeout}ms)")
+          } ?: throw SocketTimeoutException("Poll timed out (no induction response in ${handshakeBudgetMs}ms)")
 
           val conclusion = response.copy(
             encryption = commandsManager.getEncryptType(),
@@ -325,7 +322,7 @@ class SrtClient(private val connectChecker: ConnectChecker) {
           // skipped rather than mistaken for the reply.
           val responseConclusion = pollHandshake(handshakeDeadlineMs, "conclusion", HandshakeType.CONCLUSION) {
             commandsManager.writeHandshake(socket, conclusion)
-          } ?: throw SocketTimeoutException("Poll timed out (no conclusion response in ${socketTimeout}ms)")
+          } ?: throw SocketTimeoutException("Poll timed out (no conclusion response in ${handshakeBudgetMs}ms)")
           if (responseConclusion.isErrorType()) {
             onMainThread {
               connectChecker.onConnectionFailed("Error configure stream, ${responseConclusion.handshakeType.name}")
@@ -342,7 +339,7 @@ class SrtClient(private val connectChecker: ConnectChecker) {
             }
             srtSender.socket = socket
             srtSender.start()
-            lastInboundMs = System.currentTimeMillis()
+            lastInboundMs = nowMs()
             startInboundSilenceWatchdog()
             handleServerPackets()
           }
@@ -382,8 +379,8 @@ class SrtClient(private val connectChecker: ConnectChecker) {
   ): Handshake? {
     var lastSendMs = 0L
     var gapMs = HANDSHAKE_RETRANSMIT_MS
-    while (scope.isActive && System.currentTimeMillis() < deadlineMs) {
-      val now = System.currentTimeMillis()
+    while (scope.isActive && nowMs() < deadlineMs) {
+      val now = nowMs()
       if (lastSendMs == 0L || now - lastSendMs >= gapMs) {
         send()
         if (lastSendMs != 0L) gapMs = (gapMs * 2).coerceAtMost(HANDSHAKE_RETRANSMIT_CAP_MS)
@@ -420,7 +417,7 @@ class SrtClient(private val connectChecker: ConnectChecker) {
       while (isActive && isStreaming) {
         delay(inboundSilenceTickMs)
         if (lastInboundMs == 0L) continue
-        val silentMs = System.currentTimeMillis() - lastInboundMs
+        val silentMs = nowMs() - lastInboundMs
         if (silentMs > inboundSilenceTimeoutMs) {
           onMainThread {
             connectChecker.onConnectionFailed("No response from server (inbound silence ${silentMs}ms > ${inboundSilenceTimeoutMs}ms)")
@@ -519,7 +516,7 @@ class SrtClient(private val connectChecker: ConnectChecker) {
   private suspend fun handleMessages() {
     val responseBufferConclusion = socket?.readBuffer() ?: throw IOException("read buffer failed, socket disconnected")
     // GPX R7 — a packet arrived, so the server is responding. Reset the silence timer.
-    lastInboundMs = System.currentTimeMillis()
+    lastInboundMs = nowMs()
     when(val srtPacket = SrtPacket.getSrtPacket(responseBufferConclusion)) {
       is DataPacket -> {
         //ignore
@@ -643,7 +640,7 @@ class SrtClient(private val connectChecker: ConnectChecker) {
    * into a blackhole.
    */
   fun getInboundSilenceMs(): Long =
-    if (!isStreaming || lastInboundMs == 0L) -1L else System.currentTimeMillis() - lastInboundMs
+    if (!isStreaming || lastInboundMs == 0L) -1L else nowMs() - lastInboundMs
 
   /**
    * @param factor values from 0.1f to 1f

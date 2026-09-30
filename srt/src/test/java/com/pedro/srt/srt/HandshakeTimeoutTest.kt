@@ -49,4 +49,28 @@ class HandshakeTimeoutTest {
     assertEquals(1_000L, socketTimeoutMsFor(-5))
     assertEquals(1_000L, socketTimeoutMsFor(Int.MIN_VALUE))
   }
+
+  // GPX R48 — the handshake budget floor.
+
+  @Test
+  fun `R8's first knock after a capped gap goes out at 3750 ms`() {
+    // knocks at 0, 250, 750, 1750, 3750: gaps 250, 500, 1000, then the 2000 cap
+    assertEquals(3_750L, firstCappedKnockMs())
+    assertEquals(4_000L, HANDSHAKE_BUDGET_FLOOR_MS)
+  }
+
+  @Test
+  fun `the app's default latency gets the floor, not three seconds`() {
+    assertEquals(4_000L, handshakeBudgetMsFor(2_000))
+    assertEquals(4_000L, handshakeBudgetMsFor(120))
+    assertEquals(4_000L, handshakeBudgetMsFor(0))
+    assertEquals(4_000L, handshakeBudgetMsFor(-5))
+  }
+
+  @Test
+  fun `a latency above the floor keeps latency plus one second`() {
+    assertEquals(4_000L, handshakeBudgetMsFor(3_000))
+    assertEquals(4_001L, handshakeBudgetMsFor(3_001))
+    assertEquals(31_000L, handshakeBudgetMsFor(30_000))
+  }
 }

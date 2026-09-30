@@ -703,14 +703,8 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       ceiling). Harmless: `handleServerPackets` continues on a timeout, R7's inbound-silence watchdog
       runs on its own 1 s tick and fires at 5.5 s regardless of the read timeout, and `disconnect`
       closes the socket before it cancels the job, so a long read does not delay teardown.
-      **Knowingly untouched.** (a) A floor on the budget so one capped 2000 ms R8 gap always fits
-      (roughly 3750 ms) is a new policy, not this unit fix, and needs its own approval. (b) The two
-      handshake phases share one deadline, as R8 wrote it. (c) R7's silence timer and R8's deadline use
-      `System.currentTimeMillis`, a wall clock: a forward clock step of more than 5.5 s (for example a
-      network time sync after the cell radio registers) reads as inbound silence and fails the
-      connection, a backward step delays detection. R42's tracker already uses the monotonic
-      `TimeUtils.getCurrentTimeMillis`; switching R7 and R8 to it is a one-line change each, offered as
-      its own item.
+      **Knowingly untouched.** The two handshake phases share one deadline, as R8 wrote it. The
+      budget floor and the clock were found in the same review and are R48 and R49 below.
       **Tests.** `HandshakeTimeoutTest` (5 cases: 2000 ms gives 3000, the library default, zero, the
       ceiling and `Int.MAX_VALUE`, negative values). With the old expression restored 4 of the 5 fail.
       The connect path itself is not exercised: `SrtClient` needs a live UDP peer. Markers:
@@ -751,6 +745,41 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       check); the cancellation and closed-on-purpose cases pass there too, since the old loop was also
       quiet for those, and stay as guards on the new semantics. `WhipClient.connect` itself is not
       exercised (it needs a live ingest). Markers: `git grep -n "GPX R47"`.
+- [x] R48 — a floor on the SRT handshake budget (`gpxstream-app` issue #337; approved by Andy
+      2026-09-30).
+      **The gap.** With R46 the handshake budget is latency + 1000 ms: 3000 ms at the consumer's
+      default 2000 ms latency. R8's knock after a full capped 2000 ms gap goes out at 3750 ms, so any
+      latency under 2750 ms still ended the handshake before that knock, which is the one R8's own
+      comment says a server holding a prior session answers.
+      **The fix.** `handshakeBudgetMsFor(latencyMs)` = `max(socketTimeoutMsFor(latencyMs),
+      HANDSHAKE_BUDGET_FLOOR_MS)`. The floor is derived from R8's constants, not typed in:
+      `firstCappedKnockMs()` walks the schedule (3750 ms) and one poll window (250 ms) is added for
+      the reply, giving 4000 ms. R8's two constants moved from `SrtClient` to `HandshakeTimeout.kt`
+      beside it, unchanged. The post-handshake read timeout stays `socketTimeout` (no floor needed
+      there). The "Poll timed out" messages now name the budget actually used.
+      **Cost.** An unreachable server now fails after 4 s instead of 3 s at 2000 ms latency. The
+      consumer's own start timeout is `clamp(srtLatency + 2000, 7000, 15000)` ms, at least 7 s, so
+      the handshake still reports first.
+      **Knowingly untouched.** Both phases still share the one deadline: if the induction reply only
+      comes on the 3750 ms knock, the conclusion phase has about 250 ms left. Giving each phase its
+      own budget is a separate change.
+      **Tests.** `HandshakeTimeoutTest` gains 3 cases (the schedule gives 3750 and the floor 4000; low,
+      zero and negative latencies get the floor; latencies above it keep latency + 1000). With the
+      floor removed, the low-latency case fails. Markers: `git grep -n "GPX R48"`.
+- [x] R49 — SRT's silence timer and handshake deadline on a monotonic clock (`gpxstream-app` issue
+      #341; approved by Andy 2026-09-30).
+      **The bug.** R7's inbound-silence timer, `getInboundSilenceMs()` (which the consumer's liveness
+      watchdog reads) and R8's handshake deadline all used `System.currentTimeMillis`, a wall clock
+      the system can step, for example on a network time sync after the cell radio registers. A
+      forward step of more than 5.5 s read as inbound silence and failed a healthy link; a backward
+      step hid a real silence until the clock caught up.
+      **The fix.** `SrtClient.nowMs` (default `TimeUtils.getCurrentTimeMillis`, elapsed realtime, the
+      clock R42 uses) replaces all six reads. It is an `internal var` only so tests can drive time.
+      The `lastInboundMs == 0L` "not started" check still holds: elapsed realtime is milliseconds
+      since boot and is never 0 on a running device.
+      **Tests.** `SrtClockTest` (1 case: with `SystemClock.elapsedRealtime` mocked, the client's clock
+      follows it). With the wall clock restored it fails. The timer and deadline logic themselves
+      need a live peer and are not exercised. Markers: `git grep -n "GPX R49"`.
 
 ## Correction to R14's scope
 
