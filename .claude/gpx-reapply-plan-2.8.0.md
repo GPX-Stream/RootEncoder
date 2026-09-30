@@ -734,17 +734,22 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
         active: reported once through `connectChecker.onConnectionFailed("Receive loop failed, ...")`
         (guarded on `isStreaming`, so a stop racing a fault reports nothing after `onDisconnect`) and
         the loop ends. The loop does not retry: a read on a broken socket fails at once every time,
-        so retrying would spin. The consumer's reconnect reaction tears the session down and starts a
-        new loop.
+        so retrying would spin. The consumer's reaction tears the session down and starts a new loop
+        (checked in `gpxstream-app`: `ConnectionFailed` while `Streaming` enters its recovery).
+      - The report itself cannot crash the process: `onFault` throwing (a consumer callback, or no
+        Main dispatcher) is caught and dropped, cancellation aside. The loop runs in a child job with
+        no exception handler, so an escape would reach the thread's uncaught handler. Same guard as
+        `BaseSender`'s stats reporting.
       **Knowingly untouched.** The ICE and DTLS failure paths close the socket then null the field, in
       that order; their `dispatchJob` is cancelled first or does not exist yet, so the ordering does not
       matter there. A stray fault inside the STUN-reply branch of `handleMessages` stays swallowed by
       its own inner `catch`, as before.
-      **Tests.** `ReceiveLoopTest` (5 cases: a throwing handler reports once and is not retried, cancel
+      **Tests.** `ReceiveLoopTest` (6 cases: a throwing handler reports once and is not retried, cancel
       reports nothing, a failure after close reports nothing, timeouts are survived then a real fault is
-      reported once, a socket-raised cancellation is a fault). With the old catch-and-break restored 3 of
-      the 5 fail; the cancellation and closed-on-purpose cases pass there too, since the old loop was
-      also quiet for those, and stay as guards on the new semantics. `WhipClient.connect` itself is not
+      reported once, a socket-raised cancellation is a fault, a throwing reporter does not escape). With
+      the old catch-and-break restored, 3 of the first 5 failed (the reporter case was added after that
+      check); the cancellation and closed-on-purpose cases pass there too, since the old loop was also
+      quiet for those, and stay as guards on the new semantics. `WhipClient.connect` itself is not
       exercised (it needs a live ingest). Markers: `git grep -n "GPX R47"`.
 
 ## Correction to R14's scope

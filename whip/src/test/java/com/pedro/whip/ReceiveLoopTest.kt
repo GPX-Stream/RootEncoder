@@ -93,6 +93,17 @@ class ReceiveLoopTest {
   }
 
   @Test
+  fun `a reporter that throws does not escape the loop`() = runTest {
+    var reports = 0
+    ReceiveLoop(
+      readOnce = { throw IOException("read failed") },
+      isClosing = { false },
+      onFault = { reports++; throw IllegalStateException("consumer callback threw") },
+    ).run()
+    assertEquals(1, reports)
+  }
+
+  @Test
   fun `a cancellation raised by the socket while this coroutine is active is a fault`() = runTest {
     val faults = mutableListOf<Throwable>()
     ReceiveLoop(

@@ -16,6 +16,7 @@
 
 package com.pedro.whip.utils
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
@@ -55,9 +56,21 @@ internal class ReceiveLoop(
         // Cancellation is an Exception too. If it is ours, propagate it; if it came from the
         // socket's own machinery while this coroutine is still active, it is a fault like any other.
         currentCoroutineContext().ensureActive()
-        if (!isClosing()) onFault(e)
+        if (!isClosing()) report(e)
         return
       }
+    }
+  }
+
+  // A reporter that throws (a consumer callback, or no Main dispatcher) must not escape: this
+  // runs in a child job with no exception handler, so it would reach the thread's uncaught handler.
+  // Same guard as BaseSender's stats reporting.
+  private suspend fun report(e: Throwable) {
+    try {
+      onFault(e)
+    } catch (c: CancellationException) {
+      throw c
+    } catch (_: Exception) {
     }
   }
 }
