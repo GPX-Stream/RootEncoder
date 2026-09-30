@@ -265,3 +265,14 @@ the reverse; full record in `.claude/gpx-reapply-plan-2.8.0.md`. `gradlew clean 
 result is in the PR. Only the gate's serialization logic has a unit test; the rest is code reading
 plus the bench. The race is intermittent, so a bench run is a regression pass, not proof. No tag cut,
 no pin move by this change.
+
+**R46, R47 (2026-09-30) — two timeout and failure-handling fixes (consumer issues #337, #338).**
+R46: `SrtClient` derived its socket timeout from latency in the wrong unit (`latency / 1000` on a value
+already in milliseconds), which held the whole SRT handshake to about one second at any latency and
+kept R8's re-knock backoff from ever engaging; it is now latency plus one second
+(`socketTimeoutMsFor`). R47: the WHIP receive loop ended silently on any exception, which R42 then read
+as a silent ingest; it now reports a real fault once through `onConnectionFailed`, survives a read
+timeout, and ends quietly on cancellation or when `disconnect()` closed the socket (`ReceiveLoop`).
+Full records in `.claude/gpx-reapply-plan-2.8.0.md`. `gradlew clean assembleDebug test` result is in
+the PR. Unit-tested as pure functions only; `SrtClient.connect` and `WhipClient.connect` need a live
+peer and are not exercised off-device. Not bench-verified. No tag cut, no pin move by this change.
