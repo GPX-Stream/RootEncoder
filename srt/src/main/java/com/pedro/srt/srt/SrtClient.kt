@@ -269,10 +269,12 @@ class SrtClient(private val connectChecker: ConnectChecker) {
         // which the ingest rejects. Keep this line on the next upstream sync.
         val path = urlParser.getQuery("streamid") ?: urlParser.getFullPath()
         commandsManager.latency = urlParser.getQuery("latency")?.toIntOrNull() ?: commandsManager.latency
-        // GPX patch — re-derive the socket read timeout from the URL latency on every connect. A host
-        // sets socketTimeout once at configure time leaves it stale after a latency change plus a
-        // reconnect. latency is microseconds, socketTimeout is milliseconds.
-        socketTimeout = (commandsManager.latency / 1000L) + 1000L
+        // GPX patch, corrected by GPX R46 — re-derive the socket read timeout from the URL latency on
+        // every connect. A host that sets socketTimeout once at configure time leaves it stale after
+        // a latency change plus a reconnect. Both latency and socketTimeout are milliseconds; the
+        // earlier `latency / 1000` treated latency as microseconds and cut the budget to about one
+        // second at any latency.
+        socketTimeout = socketTimeoutMsFor(commandsManager.latency)
         val passphrase = urlParser.getQuery("passphrase") ?: ""
         if (passphrase.isNotEmpty() && passphrase.length in 10..79) {
           val encryptionType = when (urlParser.getQuery("pbkeylen")?.toIntOrNull()) {
