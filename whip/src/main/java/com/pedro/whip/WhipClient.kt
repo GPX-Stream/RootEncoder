@@ -21,6 +21,7 @@ import com.pedro.whip.dtls.DtlsConnection
 import com.pedro.whip.dtls.DtlsTransport
 import com.pedro.whip.utils.InboundSilenceTracker
 import com.pedro.whip.utils.Network
+import com.pedro.whip.utils.ReceiveLoop
 import com.pedro.whip.webrtc.CandidateType
 import com.pedro.whip.webrtc.CommandsManager
 import com.pedro.whip.webrtc.stun.AttributeType
@@ -393,14 +394,24 @@ class WhipClient(private val connectChecker: ConnectChecker) {
                     val dtlsResult = CompletableDeferred<Result<List<CryptoProperties>>>()
                     val dtlsTransport = DtlsTransport(socket)
 
+                    // GPX R47 — a fault in the receive loop is reported, not swallowed. The loop used to
+                    // end quietly on any exception, which left the client claiming to stream with no
+                    // reader: nothing counted the server's RTCP (R42 then read a healthy ingest as
+                    // silent) and the server's STUN checks went unanswered. iceSocket no longer
+                    // pointing at this socket means disconnect() closed it on purpose.
                     val dispatchJob = launch {
-                        while (isActive) {
-                            try {
-                                handleMessages(socket, host, port, dtlsTransport)
-                            } catch (_: Exception) {
-                                break
-                            }
-                        }
+                        ReceiveLoop(
+                            readOnce = { handleMessages(socket, host, port, dtlsTransport) },
+                            isClosing = { iceSocket !== socket },
+                            onFault = { e ->
+                                Log.e(TAG, "receive loop failed", e)
+                                if (isStreaming) {
+                                    onMainThread {
+                                        connectChecker.onConnectionFailed("Receive loop failed, ${e.validMessage()}")
+                                    }
+                                }
+                            },
+                        ).run()
                     }
 
                     if (weAreServer) {
@@ -513,8 +524,11 @@ class WhipClient(private val connectChecker: ConnectChecker) {
         // stops
         // answering the server's binding checks. Without this the connect job's read loop kept STUN
         // alive after a stop and the server-side session lingered.
-        runCatching { iceSocket?.close() }
+        // GPX R47 — clear the field first, then close: the receive loop reads "iceSocket no longer
+        // this socket" as "closed on purpose", so the field must already say so when the read fails.
+        val closing = iceSocket
         iceSocket = null
+        runCatching { closing?.close() }
         val error = runCatching {
             withTimeoutOrNull(100.milliseconds) {
                 commandsManager.writeDelete()
