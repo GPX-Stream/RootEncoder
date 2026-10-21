@@ -697,6 +697,28 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       **Tests.** `MainRenderPhotoSourceTest` (the false answer with no second source, including
       hostile sizes). Bringing the second source up and the draw need an EGL context and are not run
       on the plain JVM. Not bench-verified at the commit. Markers: `git grep -n "GPX R50"`.
+- [x] R51 — the second camera source has its own rotation (`gpxstream-app` issue #833; fork edit
+      approved by Andy 2026-10-21, option A, the per-source fix).
+      **The bug.** `MainRender.initSecondarySource` builds a fresh `CameraRender`, whose constructor
+      sets rotation 0, and nothing set it again: `setCameraRotation` (reached by
+      `GlStreamInterface.setOrientationConfig` and `setCameraOrientation`) turns the first source only.
+      With the recording riding the second camera (R41) its picture was drawn unturned while the
+      first camera's was turned by the session's way-up, so every camera (HDMI, USB, built-in) came
+      out a fixed quarter turn off as the recording's own capture. The first and second camera can
+      be different kinds, and the right angle depends on the kind (a built-in sensor follows the
+      unit, an HDMI or USB input does not), so mirroring the first source's angle is not enough.
+      **The fix.** `MainRender.setSecondaryRotation(Int)` and
+      `GlStreamInterface.setSecondaryCameraOrientation(Int)`, a counterpart to
+      `setCameraRotation` / `setCameraOrientation` for the second source only. `MainRender`
+      remembers the angle (`secondaryRotation`) and applies it to the second `CameraRender` when it
+      exists; `initSecondarySource` applies the remembered angle to the render it builds, because the
+      second texture is fetched on first request, after the consumer has chosen its angle. The
+      angle outlives a release and re-bring-up of the second source inside one `MainRender`; a new
+      `MainRender` starts at 0. No flip: nothing on the `GlStreamInterface` path sets a camera flip.
+      **Tests.** `MainRenderSecondaryRotationTest` (the angle is remembered with no second source,
+      the last one wins, the first camera's angle is not touched, hostile angles). Applying the angle
+      to a built render and the picture itself need an EGL context and are not run on the plain JVM;
+      only a device shows that the picture is upright. Markers: `git grep -n "GPX R51"`.
 
 ## Correction to R14's scope
 
