@@ -678,6 +678,25 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       construct on the plain JVM and `StreamBase` cannot either. Those parts are covered by code
       reading and the bench regression pass only. The race is intermittent and cannot be forced on
       demand, so a bench run is a regression pass, not proof. Markers: `git grep -n "GPX R45"`.
+- [x] R50 — a photo readback follows the record target's camera (`gpxstream-app` issue #831; fork
+      edit approved by Andy 2026-10-21).
+      **The bug.** With the recording riding the second camera (R41, `setRecordSource(SECONDARY)`),
+      the record encoder block of `GlStreamInterface.draw` drew from the second camera, but the
+      photo block always drew `mainRender.drawScreen`, which samples the first (stream) camera, and
+      then burned the recording's overlay (fork change 9) over it. The consumer takes its VOD
+      thumbnails and scrubber tiles through that readback, so on a split unit they showed the
+      stream's camera while the file held the recording's.
+      **The fix.** `MainRender.drawScreenFromSecondary` mirrors `drawScreenEncoderFromSecondary` for
+      the photo draw call: it draws the second source's texture with `ScreenRender.draw`, restores
+      screenRender's texture id to `lastTexId` (the preview draws later in the same frame from that
+      id), and answers false when the second source was never brought up. The photo block draws
+      through it when `recordSource == SECONDARY` and falls back to `drawScreen` otherwise, the same
+      shape as the record encoder block. The size, orientation, flip and viewport arguments are the
+      ones the photo draw already passed, and `takePhoto(width, height, ...)` (R5) is untouched. With
+      `recordSource == PRIMARY` the code path is the one before this change.
+      **Tests.** `MainRenderPhotoSourceTest` (the false answer with no second source, including
+      hostile sizes). Bringing the second source up and the draw need an EGL context and are not run
+      on the plain JVM. Not bench-verified at the commit. Markers: `git grep -n "GPX R50"`.
 
 ## Correction to R14's scope
 
