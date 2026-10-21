@@ -278,9 +278,11 @@ class MainRender internal constructor(
     // GPX R51 — the second texture is brought up on first request, long after the consumer chose
     // its rotation, so the remembered one is applied here. The render is published first and the
     // rotation read after it; setSecondaryRotation writes the rotation first and reads the render
-    // after it. Both fields are volatile, so at least one of the two sides sees the other's write: a
-    // rotation stored just before the publish is read here, and one stored after it reaches the render
-    // through the setter. The consumer also gives the angle again after it fetches the second texture.
+    // after it. Both fields are volatile, so each side sees the other's write and a rotation is not
+    // lost outright. That does not make the NEWEST rotation land: this build can read the old
+    // rotation, a setter can then apply the new one, and this setRotation(old) can still land last.
+    // What covers it in practice is that the engine thread is blocked while the second render is
+    // built, and that the consumer gives the angle again after it fetches the second texture.
     render.setRotation(secondaryRotation)
   }
 
