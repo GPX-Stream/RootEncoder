@@ -117,6 +117,27 @@ class MainRender {
     return true
   }
 
+  /**
+   * GPX R50 — the photo-readback counterpart of [drawScreenEncoderFromSecondary]: draws the second
+   * camera source's own (unfiltered) texture with the same draw call [drawScreen] makes, so a photo
+   * taken while the recording rides the second camera shows what the recording records. Restores
+   * screenRender's texId to [lastTexId] before returning, as the encoder variant does.
+   *
+   * @return false if the secondary source was never initialized (nothing to draw from) — the
+   * caller falls back to [drawScreen] in that case.
+   */
+  fun drawScreenFromSecondary(
+    width: Int, height: Int, mode: AspectRatioMode, rotation: Int,
+    flipStreamVertical: Boolean, flipStreamHorizontal: Boolean, viewPort: ViewPort?
+  ): Boolean {
+    val secondary = secondaryCameraRender ?: return false
+    screenRender.setTexId(secondary.texId)
+    screenRender.draw(width, height, mode, rotation, flipStreamVertical,
+      flipStreamHorizontal, viewPort)
+    screenRender.setTexId(lastTexId)
+    return true
+  }
+
   fun drawScreenPreview(
     width: Int, height: Int, isPortrait: Boolean,
     mode: AspectRatioMode, rotation: Int, flipStreamVertical: Boolean, flipStreamHorizontal: Boolean,

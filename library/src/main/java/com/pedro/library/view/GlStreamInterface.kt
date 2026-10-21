@@ -565,8 +565,17 @@ class GlStreamInterface(private val context: Context): OnFrameAvailableListener,
     //render surface photo if request photo
     if (takePhotoCallback != null && surfaceManagerPhoto.isReady && mainRender.isReady()) {
       if (surfaceManagerPhoto.makeCurrent()) {
-        mainRender.drawScreen(photoWidth, photoHeight, AspectRatioMode.NONE,
-          streamOrientation, isStreamVerticalFlip, isStreamHorizontalFlip, streamViewPort)
+        // GPX R50 — a photo follows the record target, because the app's only photo caller is the
+        // VOD thumbnail and scrubber tile, which must show what the recording holds. Same
+        // fallback as the record encoder block above: the first camera's picture when SECONDARY
+        // was requested but never attached. The preview and the stream encoder are untouched.
+        val photoFromSecondary = recordSource == GlCameraSource.SECONDARY &&
+          mainRender.drawScreenFromSecondary(photoWidth, photoHeight, AspectRatioMode.NONE,
+            streamOrientation, isStreamVerticalFlip, isStreamHorizontalFlip, streamViewPort)
+        if (!photoFromSecondary) {
+          mainRender.drawScreen(photoWidth, photoHeight, AspectRatioMode.NONE,
+            streamOrientation, isStreamVerticalFlip, isStreamHorizontalFlip, streamViewPort)
+        }
         // GPX fork change 9 — burn the RECORDING-destination overlay composite into the photo
         // readback too, same call shape as recordOverlayRender.draw(context) above. Without this a
         // photo taken while a RECORDING-destined overlay item is showing carried no overlay, so a
