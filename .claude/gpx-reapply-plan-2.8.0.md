@@ -716,9 +716,14 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       angle outlives a release and re-bring-up of the second source inside one `MainRender`; a new
       `MainRender` starts at 0. No flip: nothing on the `GlStreamInterface` path sets a camera flip.
       **Tests.** `MainRenderSecondaryRotationTest` (the angle is remembered with no second source,
-      the last one wins, the first camera's angle is not touched, hostile angles). Applying the angle
-      to a built render and the picture itself need an EGL context and are not run on the plain JVM;
-      only a device shows that the picture is upright. Markers: `git grep -n "GPX R51"`.
+      the last one wins, the first camera's angle is not touched, hostile angles) and
+      `MainRenderSecondaryRotationApplyTest` (the angle is applied to the render `initSecondarySource`
+      builds and to a render that exists, through a stand-in render whose GL setup does nothing; the
+      apply-on-build tests fail with that line removed). The real GL setup and the picture itself need
+      an EGL context and are not run on the plain JVM; only a device shows that the picture is upright
+      (bench-confirmed upright for USB, HDMI and the built-in camera at a fixed landscape mount,
+      2026-10-21). `secondaryCameraRender` and `secondaryRotation` are both volatile, so the build and a
+      concurrent setter cannot both miss each other's write. Markers: `git grep -n "GPX R51"`.
 
 ## Correction to R14's scope
 

@@ -16,15 +16,17 @@
 
 package com.pedro.encoder.input.gl.render
 
+import android.content.Context
+import android.content.ContextWrapper
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
-// GPX R51 — covers the one thing that needs no GL context: the second camera's rotation is
-// remembered by MainRender whether or not the second source exists yet, so initSecondarySource can
-// apply it to the render it builds (the second texture is fetched late). Bringing the second source
-// up, applying the remembered value to it and the picture itself need a live EGL context and cannot
-// run on the plain JVM; those are device-checked.
+// GPX R51 — covers what needs no GL context: the second camera's rotation is remembered by
+// MainRender whether or not the second source exists yet. MainRenderSecondaryRotationApplyTest below
+// covers that initSecondarySource applies it, with a stand-in render. The real GL setup and the
+// picture itself need a live EGL context and cannot run on the plain JVM; those are device-checked.
 class MainRenderSecondaryRotationTest {
 
   private val mainRender = MainRender()
@@ -64,5 +66,56 @@ class MainRenderSecondaryRotationTest {
       mainRender.setSecondaryRotation(angle)
       assertEquals(angle, mainRender.secondaryRotation)
     }
+  }
+}
+
+// GPX R51 — the apply-on-build and apply-after-build lines, with a stand-in for the second render
+// whose GL setup does nothing, so no EGL context is needed. The stand-in records the last rotation it was
+// given; -1 means none was.
+class MainRenderSecondaryRotationApplyTest {
+
+  private class RecordingRender : CameraRender() {
+    @JvmField var lastRotation = -1
+
+    override fun initGl(
+      width: Int, height: Int, context: Context, previewWidth: Int, previewHeight: Int
+    ) = Unit
+
+    override fun setRotation(rotation: Int) {
+      lastRotation = rotation
+    }
+  }
+
+  private val built = mutableListOf<RecordingRender>()
+  private val mainRender = MainRender { RecordingRender().also { built += it } }
+  private val context: Context = ContextWrapper(null)
+
+  @Test
+  fun `a rotation chosen before the second source exists is applied to the render it builds`() {
+    mainRender.setSecondaryRotation(90)
+
+    mainRender.initSecondarySource(context)
+
+    assertTrue(mainRender.hasSecondarySource())
+    assertEquals(90, built.single().lastRotation)
+  }
+
+  @Test
+  fun `a rotation chosen after the second source exists is applied to its render`() {
+    mainRender.initSecondarySource(context)
+
+    mainRender.setSecondaryRotation(180)
+
+    assertEquals(180, built.single().lastRotation)
+  }
+
+  @Test
+  fun `asking for the second source twice builds one render and keeps its rotation`() {
+    mainRender.setSecondaryRotation(270)
+    mainRender.initSecondarySource(context)
+    mainRender.initSecondarySource(context)
+
+    assertEquals(1, built.size)
+    assertEquals(270, built.single().lastRotation)
   }
 }

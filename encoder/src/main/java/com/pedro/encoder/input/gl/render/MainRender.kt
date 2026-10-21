@@ -31,12 +31,19 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Created by pedro on 20/3/22.
  */
 @RequiresApi(api = Build.VERSION_CODES.JELLY_BEAN_MR2)
-class MainRender {
+class MainRender internal constructor(
+  // GPX R51 — how the second source's render is built; a test passes a stand-in whose GL setup does
+  // nothing, so the rotation handling can run without an EGL context.
+  private val newSecondaryRender: () -> CameraRender
+) {
+  constructor() : this({ CameraRender() })
+
   private val cameraRender = CameraRender()
   private val screenRender = ScreenRender()
   // GPX R41 — the record/stream route's own independent second camera input (gpxstream-app issue
   // #272, Decision 4). Null until a caller actually asks for it via initSecondarySource, so a
   // consumer that never touches this allocates no extra texture, FBO or draw call.
+  @Volatile
   private var secondaryCameraRender: CameraRender? = null
 
   // GPX R51 — the rotation the second source is to draw with, in degrees as [CameraRender.setRotation]
@@ -265,13 +272,15 @@ class MainRender {
    */
   fun initSecondarySource(context: Context) {
     if (secondaryCameraRender != null) return
-    val render = CameraRender()
+    val render = newSecondaryRender()
     render.initGl(width, height, context, previewWidth, previewHeight)
     secondaryCameraRender = render
     // GPX R51 — the second texture is brought up on first request, long after the consumer chose
-    // its rotation, so the remembered one is applied here. Applied after the render is published
-    // and read from the field then: a setSecondaryRotation that stored its value just before the
-    // publish is picked up by this read, and one that runs just after applies it to the render itself.
+    // its rotation, so the remembered one is applied here. The render is published first and the
+    // rotation read after it; setSecondaryRotation writes the rotation first and reads the render
+    // after it. Both fields are volatile, so at least one of the two sides sees the other's write: a
+    // rotation stored just before the publish is read here, and one stored after it reaches the render
+    // through the setter. The consumer also gives the angle again after it fetches the second texture.
     render.setRotation(secondaryRotation)
   }
 
