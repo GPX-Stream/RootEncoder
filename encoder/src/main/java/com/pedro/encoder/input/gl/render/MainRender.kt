@@ -38,6 +38,12 @@ class MainRender {
   // #272, Decision 4). Null until a caller actually asks for it via initSecondarySource, so a
   // consumer that never touches this allocates no extra texture, FBO or draw call.
   private var secondaryCameraRender: CameraRender? = null
+
+  // GPX R51 — the rotation the second source is to draw with, in degrees as [CameraRender.setRotation]
+  // takes them. Read back by tests, and by initSecondarySource to turn a freshly built render.
+  @Volatile
+  var secondaryRotation: Int = 0
+    private set
   private var width = 0
   private var height = 0
   private var previewWidth = 0
@@ -262,6 +268,11 @@ class MainRender {
     val render = CameraRender()
     render.initGl(width, height, context, previewWidth, previewHeight)
     secondaryCameraRender = render
+    // GPX R51 — the second texture is brought up on first request, long after the consumer chose
+    // its rotation, so the remembered one is applied here. Applied after the render is published
+    // and read from the field then: a setSecondaryRotation that stored its value just before the
+    // publish is picked up by this read, and one that runs just after applies it to the render itself.
+    render.setRotation(secondaryRotation)
   }
 
   /** GPX R41 — [getSurfaceTexture] counterpart for the second source. Null until [initSecondarySource] runs. */
@@ -282,6 +293,23 @@ class MainRender {
 
   fun setCameraRotation(rotation: Int) {
     cameraRender.setRotation(rotation)
+  }
+
+  /**
+   * GPX R51 — [setCameraRotation] counterpart for the second source, which has its own rotation
+   * because the second camera is a different camera: what turns the first camera's picture upright
+   * is not what turns the second's (a built-in sensor follows the unit, an HDMI or USB input does
+   * not). Before this the second render sat at rotation 0 for good, so its picture came out turned
+   * a fixed quarter turn against the first's.
+   *
+   * Remembered in [secondaryRotation] and applied to the render when it exists; if it does not
+   * exist yet, [initSecondarySource] applies the remembered value to the render it builds. The
+   * value survives the second source being released and brought up again inside this MainRender
+   * (a graphics stop and start); a new MainRender starts at 0.
+   */
+  fun setSecondaryRotation(rotation: Int) {
+    secondaryRotation = rotation
+    secondaryCameraRender?.setRotation(rotation)
   }
 
   fun setCameraFlip(isFlipHorizontal: Boolean, isFlipVertical: Boolean) {

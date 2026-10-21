@@ -783,6 +783,16 @@ class GlStreamInterface(private val context: Context): OnFrameAvailableListener,
     mainRender.setCameraRotation(orientation)
   }
 
+  /**
+   * GPX R51 — [setCameraOrientation] counterpart for the second camera source (R41). Safe to call
+   * before the second source is brought up: the angle is remembered and applied when the source
+   * is built, and again if it is released and brought up inside this interface. [setOrientationConfig]
+   * and [setCameraOrientation] still reach the first camera only.
+   */
+  fun setSecondaryCameraOrientation(orientation: Int) {
+    mainRender.setSecondaryRotation(orientation)
+  }
+
   override fun setFilter(filterPosition: Int, baseFilterRender: BaseFilterRender) {
     filterQueue.add(Filter(FilterAction.SET_INDEX, filterPosition, baseFilterRender))
   }
