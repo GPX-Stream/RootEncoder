@@ -826,6 +826,77 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       (bench-confirmed upright for USB, HDMI and the built-in camera at a fixed landscape mount,
       2026-10-21). `secondaryCameraRender` and `secondaryRotation` are both volatile, so the build and a
       concurrent setter cannot both miss each other's write. Markers: `git grep -n "GPX R51"`.
+- [x] R52 — merge of upstream `pedro/master` @ `f1bbda7ca` (28 non-merge commits past R35's
+      `1285703ba`) with the R46–R51 line, on branch `gpx-alpha1` (owner request 2026-10-27: audit every
+      GPX override against upstream's fixes, keep what is still valid, take upstream where it covers
+      ours). `gpx-2.8` (R46–R49) and `gpx/833-second-camera-rotation` (R50–R51) were merged first; only
+      this plan file conflicted, and both sides only appended to it.
+      **What arrives.** Upstream moved SRT retransmission into `PacketRetransmission.kt` and added a
+      server-silence option (`d26c52d27`, `c72bf1b1c`, `5f23924b1`, `442ee5b58`, `562973772`,
+      `40dfaeff0`, `ff8f83254`); gave WHIP a DTLS client role with RFC 3711 RTCP keys, a bound UDP
+      socket and a longer handshake wait (`7a488651c`, `bedbb973f`, `bc0a2dd4e`, `9881eb61c`,
+      `25afaaa65`, `648c686ca`, `8fa9817e5`); moved filter release into `BaseFilterRender`
+      (`d2655d666`, `023f4369b`); and corrected `DtlsTransport.send` slicing. The rest is
+      RTMP/RTSP socket plumbing, URL validation and GIF null handling, none of it on a path this
+      consumer runs.
+      **Conflicts and how each resolved.**
+      - `AudioEncoder.checkBuffer` (R43, a cherry-pick of `54b196108`): took upstream; the two sides
+        differ only in comment layout.
+      - `CommandsManager.kt` and `DataPacket.kt` (R44, a cherry-pick of `562973772`): took upstream
+        whole. `PacketRetransmission` keeps everything R44 had (token bucket, resend gate, latency
+        skip, unique-loss count) and adds a warm-up window for the media-rate estimate, an immediate
+        follow of a rising rate, and a `setRetransmitOverhead` passthrough on `GenericStreamClient`
+        that R44 noted as missing. `CommandsManagerTest` is upstream's.
+      - `AsyncBaseRecordController.stop` (R29 against upstream's own bound, adopted as R40): kept R29's
+        3000 ms join. Upstream's is 1000 ms. R29's value was bench-verified; narrowing it is a
+        separate decision. The now-unused `milliseconds` import was removed.
+      - `MainRender.release`: kept R41's second-source release and switched the filter loop to
+        upstream's `releaseFilter()`.
+      - `SrtClient`: kept R7, R8, R46, R48 and R49 whole and took upstream's `packetsLostUnique`,
+        `setRetransmitOverhead` and `updateRtt` call. Upstream's optional `setServerSilenceTimeout`
+        (default off) now sits beside R7's always-on inbound-silence watchdog; R7 stays because it is
+        what feeds the consumer's `getInboundSilenceMs()` and runs on its own tick on a monotonic
+        clock. Nothing turns upstream's option on.
+      - WHIP (`WhipClient`, `SdpInfo`, `SdpParser`, `DtlsClient.kt`): R14's DTLS client role is
+        retired and upstream's `DtlsClientConnection` / `DtlsServerConnection` are used. They offer the
+        same use_srtp extension, check the same fingerprint, answer a certificate request and export the
+        same keying material, and they also derive separate SRTCP keys (R14 reused the RTP keys for
+        RTCP) and reject a server that does not accept the SRTP profile. `DtlsClient.kt` was deleted.
+        `SdpInfo.setupRole` became upstream's `isActiveMode` (same rule: only an explicit "active"
+        makes us the DTLS server). The ICE socket is now bound with a remote address instead of
+        connected, as upstream does, so packets from another port are not dropped.
+        **Kept from R14:** the bounded ICE binding and nomination retransmit (500 ms, 14 attempts) and
+        the failure messages that name the step; the release of the ICE socket on stop and on a failed
+        attempt; the media-plane packet count; the 1200-byte packet cap; the SDP offer log; the
+        "msid-semantic: WMS" form Millicast accepts; and `lastOrNull` in `SdpParser.extractContent`
+        (upstream's version still throws on a missing field). Upstream's loop no longer waits for the
+        server's own binding request before nominating (an ice-lite server such as SRS never sends one),
+        and the retransmit loop takes that rule too. **Kept R42 and R47** unchanged in behaviour: the
+        inbound-silence clock and the reported, non-silent receive-loop fault.
+      **Per-item outcome.**
+      | Item | Outcome |
+      |---|---|
+      | R7, R8, R46, R48, R49 | kept; upstream's optional silence check coexists, off |
+      | R9 | kept; `AudioEncoder` timestamp code not touched by the merge |
+      | R12, R29 | kept; R29's 3000 ms join stays over upstream's 1000 ms |
+      | R14 | split: DTLS client role retired for upstream's; ICE retransmit, socket release, packet cap, offer shape, SDP guard kept |
+      | R41, R50, R51 | kept; `MainRender.release` uses upstream's `releaseFilter()` |
+      | R42, R47 | kept |
+      | R40, R43, R44 | retired into upstream (they were cherry-picks of its commits) |
+      | every other item | file not touched by upstream's range; unchanged |
+      **Marker check.** The inventory moved from 257 to 250 marker lines: seven R14 lines retired
+      with the DTLS client role, and no others. Every file that differs from `pedro/master` and was
+      GPX-marked before still carries a marker; `TransportPrimerTest.kt` and
+      `TransportConstructionTest.kt` stay unmarked (wholly new R33 tests).
+      **Verification.** `gradlew assembleDebug test --rerun-tasks` passes across every module (380 tests,
+      0 failures). A read-only review of the WHIP and SRT merge found nothing the merge broke. Two
+      points it raised stay on the watch list: the offer now pairs upstream's per-stream `msid` lines
+      with the "msid-semantic: WMS" form Millicast needs, which only a live publish settles; and the
+      ICE retransmit needs the `KTOR` socket type (the default, and the one the consumer uses),
+      because a `JAVA` socket's blocking read cannot be cancelled by the 500 ms timeout. Not
+      exercised on a device. For the bench: a WHIP publish to the Millicast ingest (passive answer, so the DTLS
+      client path now runs upstream's code), an SRT publish with induced loss (retransmit budget), and
+      a record stop under a stalled write.
 
 ## Correction to R14's scope
 

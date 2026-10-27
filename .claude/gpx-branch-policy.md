@@ -9,7 +9,7 @@ This fork carries one active GPX line, `gpx-2.8`. It previously carried a second
 | Branch | Base | Purpose |
 |---|---|---|
 | `master` | — | Mirror of `pedroSG94/RootEncoder` master. Fast-forward only, never a GPX commit. |
-| `gpx-2.8` | upstream `9a9ca124f` (2026-07-30) | Active. The line `gpxstream-app` builds against. Synced forward since; latest merged upstream is `1285703b` (R35, 2026-09-09). |
+| `gpx-alpha1` | upstream `9a9ca124f` (2026-07-30) | Active. The line `gpxstream-app` builds against. It is `gpx-2.8` (R46–R49) merged with `gpx/833-second-camera-rotation` (R50–R51) and upstream `f1bbda7ca` (R52, 2026-10-27). Both of those branches were deleted after the merge; `alpha1` stays a tag on the old R50–R51 tip. |
 
 ## Tags and who consumes them
 

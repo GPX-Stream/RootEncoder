@@ -107,6 +107,7 @@ class SrtClient(private val connectChecker: ConnectChecker) {
   private val inboundSilenceTimeoutMs = 5_500L
   private val inboundSilenceTickMs = 1_000L
 
+  private var serverSilenceTimeoutMs = 0L
   @Volatile
   var isStreaming = false
     private set
@@ -167,7 +168,7 @@ class SrtClient(private val connectChecker: ConnectChecker) {
    * Default 25. Values <= 0 disable the limit.
    */
   fun setRetransmitOverhead(percent: Int) {
-    commandsManager.retransmitOverheadPercent = percent
+    commandsManager.setRetransmitOverhead(percent)
   }
 
   fun setDelay(millis: Long) {
@@ -207,6 +208,19 @@ class SrtClient(private val connectChecker: ConnectChecker) {
    */
   fun setCheckServerAlive(enabled: Boolean) {
     checkServerAlive = enabled
+  }
+
+  /**
+   * Report onConnectionFailed("No response from server") if no packet is received from the
+   * server for [millis]. While data is being published, the server acknowledges it with ACK
+   * packets (typically every 10 ms), so a long silence means the path is dead even if sending
+   * does not fail (for example, packets silently dropped by the network).
+   * Unlike [setCheckServerAlive] it needs no ICMP/Echo, which firewalls often block.
+   * Servers only acknowledge received data, so use a value well above the longest pause in
+   * which no media is sent. 0 (default) disables the check.
+   */
+  fun setServerSilenceTimeout(millis: Long) {
+    serverSilenceTimeoutMs = millis
   }
 
   fun setReTries(reTries: Int) {
@@ -481,11 +495,13 @@ class SrtClient(private val connectChecker: ConnectChecker) {
 
   @Throws(IOException::class)
   private suspend fun handleServerPackets() {
+    var lastServerPacketTs = TimeUtils.getCurrentTimeMillis()
     while (scope.isActive && isStreaming) {
       val error = runCatching {
         if (isAlive()) {
           //ignore packet after connect if tunneled to avoid spam idle
           handleMessages()
+          lastServerPacketTs = TimeUtils.getCurrentTimeMillis()
         } else {
           onMainThread {
             connectChecker.onConnectionFailed("No response from server")
@@ -494,6 +510,12 @@ class SrtClient(private val connectChecker: ConnectChecker) {
         }
       }.exceptionOrNull()
       if (error != null && ConnectionFailed.parse(error.validMessage()) != ConnectionFailed.TIMEOUT) {
+        scope.cancel()
+      } else if (error != null && serverSilenceTimeoutMs > 0 &&
+        TimeUtils.getCurrentTimeMillis() - lastServerPacketTs >= serverSilenceTimeoutMs) {
+        onMainThread {
+          connectChecker.onConnectionFailed("No response from server")
+        }
         scope.cancel()
       }
     }

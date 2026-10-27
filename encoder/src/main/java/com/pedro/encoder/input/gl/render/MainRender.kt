@@ -55,7 +55,7 @@ class MainRender internal constructor(
   private var height = 0
   private var previewWidth = 0
   private var previewHeight = 0
-  private var context: Context? = null
+  private lateinit var context: Context
   private var filterRenders = mutableListOf<BaseFilterRender>()
   private val running = AtomicBoolean(false)
   // GPX R41 — the texture id the filter chain last produced, tracked so
@@ -165,19 +165,16 @@ class MainRender internal constructor(
     // GPX R41 — the second source, if one was ever brought up.
     secondaryCameraRender?.release()
     secondaryCameraRender = null
-    for (baseFilterRender in filterRenders) baseFilterRender.release()
+    for (baseFilterRender in filterRenders) baseFilterRender.releaseFilter()
     filterRenders.clear()
     screenRender.release()
   }
 
   private fun setFilter(position: Int, baseFilterRender: BaseFilterRender) {
-    val id = filterRenders[position].previousTexId
-    val renderHandler = filterRenders[position].renderHandler
-    filterRenders[position].release()
+    filterRenders[position].releaseFilter()
     filterRenders[position] = baseFilterRender
-    filterRenders[position].previousTexId = id
-    filterRenders[position].initGl(width, height, context, previewWidth, previewHeight)
-    filterRenders[position].renderHandler = renderHandler
+    baseFilterRender.initGl(width, height, context, previewWidth, previewHeight)
+    baseFilterRender.initFBOLink()
   }
 
   private fun addFilter(baseFilterRender: BaseFilterRender) {
@@ -193,19 +190,16 @@ class MainRender internal constructor(
   }
 
   private fun clearFilters() {
-    for (baseFilterRender in filterRenders) {
-      baseFilterRender.release()
-    }
+    for (baseFilterRender in filterRenders) baseFilterRender.releaseFilter()
     filterRenders.clear()
   }
 
   private fun removeFilter(position: Int) {
-    filterRenders.removeAt(position).release()
+    filterRenders.removeAt(position).releaseFilter()
   }
 
   private fun removeFilter(baseFilterRender: BaseFilterRender) {
-    baseFilterRender.release()
-    filterRenders.remove(baseFilterRender)
+    if (filterRenders.remove(baseFilterRender)) baseFilterRender.releaseFilter()
   }
 
   private fun reOrderFilters(filters: List<BaseFilterRender>) {
@@ -220,7 +214,7 @@ class MainRender internal constructor(
 
   fun setFilterAction(filterAction: FilterAction, position: Int, baseFilterRender: BaseFilterRender) {
     when (filterAction) {
-      FilterAction.SET -> if (filterRenders.size > 0) {
+      FilterAction.SET -> if (filterRenders.isNotEmpty()) {
         setFilter(position, baseFilterRender)
       } else {
         addFilter(baseFilterRender)

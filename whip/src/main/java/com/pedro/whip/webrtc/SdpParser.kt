@@ -29,9 +29,8 @@ object SdpParser {
     val uPass = extractContent(body, "a=ice-pwd:")
     val fingerprint = extractContent(body, "a=fingerprint:sha-256")
     val candidates = extractCandidates(body)
-    // GPX R14 — read the remote DTLS role so the client knows which side sends the ClientHello.
-    val setupRole = extractContent(body, "a=setup:").ifEmpty { null }
-    return SdpInfo(uFrag, uPass, fingerprint, candidates, setupRole)
+    val isActiveMode = extractOptionalContent(body, "a=setup:").equals("active", ignoreCase = true)
+    return SdpInfo(uFrag, uPass, fingerprint, candidates, isActiveMode)
   }
 
   private fun extractContent(sdp: String, content: String): String {
@@ -39,6 +38,11 @@ object SdpParser {
     // value rather than throwing NoSuchElementException out of parseBodyAnswer.
     return sdp.lines()
       .map { it.trim() }.lastOrNull { it.startsWith(content, ignoreCase = true) }?.removePrefix(content)?.trim() ?: ""
+  }
+
+  private fun extractOptionalContent(sdp: String, content: String): String? {
+    return sdp.lines()
+      .map { it.trim() }.lastOrNull { it.startsWith(content, ignoreCase = true) }?.substring(content.length)?.trim()
   }
 
   private fun extractCandidates(sdp: String): List<Candidate> {
