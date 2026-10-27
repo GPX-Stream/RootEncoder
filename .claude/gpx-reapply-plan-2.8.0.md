@@ -780,6 +780,52 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       **Tests.** `SrtClockTest` (1 case: with `SystemClock.elapsedRealtime` mocked, the client's clock
       follows it). With the wall clock restored it fails. The timer and deadline logic themselves
       need a live peer and are not exercised. Markers: `git grep -n "GPX R49"`.
+- [x] R50 — a photo readback follows the record target's camera (`gpxstream-app` issue #831; fork
+      edit approved by Andy 2026-10-21).
+      **The bug.** With the recording riding the second camera (R41, `setRecordSource(SECONDARY)`),
+      the record encoder block of `GlStreamInterface.draw` drew from the second camera, but the
+      photo block always drew `mainRender.drawScreen`, which samples the first (stream) camera, and
+      then burned the recording's overlay (fork change 9) over it. The consumer takes its VOD
+      thumbnails and scrubber tiles through that readback, so on a split unit they showed the
+      stream's camera while the file held the recording's.
+      **The fix.** `MainRender.drawScreenFromSecondary` mirrors `drawScreenEncoderFromSecondary` for
+      the photo draw call: it draws the second source's texture with `ScreenRender.draw`, restores
+      screenRender's texture id to `lastTexId` (the preview draws later in the same frame from that
+      id), and answers false when the second source was never brought up. The photo block draws
+      through it when `recordSource == SECONDARY` and falls back to `drawScreen` otherwise, the same
+      shape as the record encoder block. The size, orientation, flip and viewport arguments are the
+      ones the photo draw already passed, and `takePhoto(width, height, ...)` (R5) is untouched. With
+      `recordSource == PRIMARY` the code path is the one before this change.
+      **Tests.** `MainRenderPhotoSourceTest` (the false answer with no second source, including
+      hostile sizes). Bringing the second source up and the draw need an EGL context and are not run
+      on the plain JVM. Not bench-verified at the commit. Markers: `git grep -n "GPX R50"`.
+- [x] R51 — the second camera source has its own rotation (`gpxstream-app` issue #833; fork edit
+      approved by Andy 2026-10-21, option A, the per-source fix).
+      **The bug.** `MainRender.initSecondarySource` builds a fresh `CameraRender`, whose constructor
+      sets rotation 0, and nothing set it again: `setCameraRotation` (reached by
+      `GlStreamInterface.setOrientationConfig` and `setCameraOrientation`) turns the first source only.
+      With the recording riding the second camera (R41) its picture was drawn unturned while the
+      first camera's was turned by the session's way-up, so every camera (HDMI, USB, built-in) came
+      out a fixed quarter turn off as the recording's own capture. The first and second camera can
+      be different kinds, and the right angle depends on the kind (a built-in sensor follows the
+      unit, an HDMI or USB input does not), so mirroring the first source's angle is not enough.
+      **The fix.** `MainRender.setSecondaryRotation(Int)` and
+      `GlStreamInterface.setSecondaryCameraOrientation(Int)`, a counterpart to
+      `setCameraRotation` / `setCameraOrientation` for the second source only. `MainRender`
+      remembers the angle (`secondaryRotation`) and applies it to the second `CameraRender` when it
+      exists; `initSecondarySource` applies the remembered angle to the render it builds, because the
+      second texture is fetched on first request, after the consumer has chosen its angle. The
+      angle outlives a release and re-bring-up of the second source inside one `MainRender`; a new
+      `MainRender` starts at 0. No flip: nothing on the `GlStreamInterface` path sets a camera flip.
+      **Tests.** `MainRenderSecondaryRotationTest` (the angle is remembered with no second source,
+      the last one wins, the first camera's angle is not touched, hostile angles) and
+      `MainRenderSecondaryRotationApplyTest` (the angle is applied to the render `initSecondarySource`
+      builds and to a render that exists, through a stand-in render whose GL setup does nothing; the
+      apply-on-build tests fail with that line removed). The real GL setup and the picture itself need
+      an EGL context and are not run on the plain JVM; only a device shows that the picture is upright
+      (bench-confirmed upright for USB, HDMI and the built-in camera at a fixed landscape mount,
+      2026-10-21). `secondaryCameraRender` and `secondaryRotation` are both volatile, so the build and a
+      concurrent setter cannot both miss each other's write. Markers: `git grep -n "GPX R51"`.
 
 ## Correction to R14's scope
 

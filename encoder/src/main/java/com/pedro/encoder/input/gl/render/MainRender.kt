@@ -31,13 +31,26 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Created by pedro on 20/3/22.
  */
 @RequiresApi(api = Build.VERSION_CODES.JELLY_BEAN_MR2)
-class MainRender {
+class MainRender internal constructor(
+  // GPX R51 — how the second source's render is built; a test passes a stand-in whose GL setup does
+  // nothing, so the rotation handling can run without an EGL context.
+  private val newSecondaryRender: () -> CameraRender
+) {
+  constructor() : this({ CameraRender() })
+
   private val cameraRender = CameraRender()
   private val screenRender = ScreenRender()
   // GPX R41 — the record/stream route's own independent second camera input (gpxstream-app issue
   // #272, Decision 4). Null until a caller actually asks for it via initSecondarySource, so a
   // consumer that never touches this allocates no extra texture, FBO or draw call.
+  @Volatile
   private var secondaryCameraRender: CameraRender? = null
+
+  // GPX R51 — the rotation the second source is to draw with, in degrees as [CameraRender.setRotation]
+  // takes them. Read back by tests, and by initSecondarySource to turn a freshly built render.
+  @Volatile
+  var secondaryRotation: Int = 0
+    private set
   private var width = 0
   private var height = 0
   private var previewWidth = 0
@@ -112,6 +125,27 @@ class MainRender {
     val secondary = secondaryCameraRender ?: return false
     screenRender.setTexId(secondary.texId)
     screenRender.drawEncoder(width, height, isPortrait, rotation, flipStreamVertical,
+      flipStreamHorizontal, viewPort)
+    screenRender.setTexId(lastTexId)
+    return true
+  }
+
+  /**
+   * GPX R50 — the photo-readback counterpart of [drawScreenEncoderFromSecondary]: draws the second
+   * camera source's own (unfiltered) texture with the same draw call [drawScreen] makes, so a photo
+   * taken while the recording rides the second camera shows what the recording records. Restores
+   * screenRender's texId to [lastTexId] before returning, as the encoder variant does.
+   *
+   * @return false if the secondary source was never initialized (nothing to draw from) — the
+   * caller falls back to [drawScreen] in that case.
+   */
+  fun drawScreenFromSecondary(
+    width: Int, height: Int, mode: AspectRatioMode, rotation: Int,
+    flipStreamVertical: Boolean, flipStreamHorizontal: Boolean, viewPort: ViewPort?
+  ): Boolean {
+    val secondary = secondaryCameraRender ?: return false
+    screenRender.setTexId(secondary.texId)
+    screenRender.draw(width, height, mode, rotation, flipStreamVertical,
       flipStreamHorizontal, viewPort)
     screenRender.setTexId(lastTexId)
     return true
@@ -238,9 +272,18 @@ class MainRender {
    */
   fun initSecondarySource(context: Context) {
     if (secondaryCameraRender != null) return
-    val render = CameraRender()
+    val render = newSecondaryRender()
     render.initGl(width, height, context, previewWidth, previewHeight)
     secondaryCameraRender = render
+    // GPX R51 — the second texture is brought up on first request, long after the consumer chose
+    // its rotation, so the remembered one is applied here. The render is published first and the
+    // rotation read after it; setSecondaryRotation writes the rotation first and reads the render
+    // after it. Both fields are volatile, so each side sees the other's write and a rotation is not
+    // lost outright. That does not make the NEWEST rotation land: this build can read the old
+    // rotation, a setter can then apply the new one, and this setRotation(old) can still land last.
+    // What covers it in practice is that the engine thread is blocked while the second render is
+    // built, and that the consumer gives the angle again after it fetches the second texture.
+    render.setRotation(secondaryRotation)
   }
 
   /** GPX R41 — [getSurfaceTexture] counterpart for the second source. Null until [initSecondarySource] runs. */
@@ -261,6 +304,23 @@ class MainRender {
 
   fun setCameraRotation(rotation: Int) {
     cameraRender.setRotation(rotation)
+  }
+
+  /**
+   * GPX R51 — [setCameraRotation] counterpart for the second source, which has its own rotation
+   * because the second camera is a different camera: what turns the first camera's picture upright
+   * is not what turns the second's (a built-in sensor follows the unit, an HDMI or USB input does
+   * not). Before this the second render sat at rotation 0 for good, so its picture came out turned
+   * a fixed quarter turn against the first's.
+   *
+   * Remembered in [secondaryRotation] and applied to the render when it exists; if it does not
+   * exist yet, [initSecondarySource] applies the remembered value to the render it builds. The
+   * value survives the second source being released and brought up again inside this MainRender
+   * (a graphics stop and start); a new MainRender starts at 0.
+   */
+  fun setSecondaryRotation(rotation: Int) {
+    secondaryRotation = rotation
+    secondaryCameraRender?.setRotation(rotation)
   }
 
   fun setCameraFlip(isFlipHorizontal: Boolean, isFlipVertical: Boolean) {
