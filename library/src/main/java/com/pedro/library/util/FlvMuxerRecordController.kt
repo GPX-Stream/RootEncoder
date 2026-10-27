@@ -122,6 +122,7 @@ class FlvMuxerRecordController: AsyncBaseRecordController() {
             if (!sendInfo) {
                 when (videoPacket) {
                     is H264Packet -> {
+                        // GPX R6 — fall back to reading SPS/PPS from an AVCC record when csd-0 is not Annex-B.
                         val buffers: Pair<ByteBuffer, ByteBuffer>? =
                             VideoEncoderHelper.decodeSpsPpsFromBuffer(buffer.duplicate(), info.size)
                                 ?: extractSpsPpsFromAvcc(buffer.duplicate(), info.size)

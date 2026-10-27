@@ -200,6 +200,7 @@ class Camera2ApiManager(context: Context) {
         isPrepared = true
     }
 
+    // GPX R38 — the camera id travels with the callbacks so a listener can tell which camera reported.
     private fun startPreview(cameraDevice: CameraDevice, handler: Handler, generation: Long, cameraId: String) {
         try {
             val surface = surfaceEncoder ?: run {

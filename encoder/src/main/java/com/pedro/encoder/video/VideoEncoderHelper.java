@@ -76,6 +76,7 @@ public class VideoEncoderHelper {
   public static List<ByteBuffer> extractVpsSpsPpsFromH265(ByteBuffer csd0byteBuffer) {
     List<ByteBuffer> byteBufferList = new ArrayList<>();
     int length = csd0byteBuffer.remaining();
+    // GPX R3b — an empty csd-0 has nothing to extract.
     if (length <= 0) return byteBufferList;
     byte[] csdArray = new byte[length];
     csd0byteBuffer.get(csdArray, 0, length);

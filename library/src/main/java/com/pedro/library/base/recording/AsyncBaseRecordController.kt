@@ -224,6 +224,7 @@ abstract class AsyncBaseRecordController : RecordController {
     tracks: RecordTracks
   ) {
     clearTimestamp()
+    // GPX R12 — a new recording starts its byte count and rollover latch afresh.
     bytesWritten = 0
     rolloverNotified = false
     muxerChannel = Channel(CAPACITY)

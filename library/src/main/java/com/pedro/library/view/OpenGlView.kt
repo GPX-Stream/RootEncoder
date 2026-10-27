@@ -319,6 +319,7 @@ open class OpenGlView : SurfaceView, GlInterface, OnFrameAvailableListener, Surf
         }
         if (takePhotoCallback != null && surfaceManagerPhoto.isReady && mainRender.isReady()) {
             if (surfaceManagerPhoto.makeCurrent()) {
+                // GPX R5 — the photo is drawn at the size the caller asked for.
                 mainRender.drawScreen(photoWidth, photoHeight, aspectRatioMode, streamRotation, isStreamVerticalFlip, isStreamHorizontalFlip, null)
                 takePhotoCallback?.onTakePhoto(GlUtil.getBitmap(photoWidth, photoHeight))
                 takePhotoCallback = null

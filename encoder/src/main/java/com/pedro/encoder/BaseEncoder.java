@@ -237,6 +237,7 @@ public abstract class BaseEncoder implements EncoderCallback {
   }
 
   public void stop(boolean resetTs) {
+    // GPX R9 — keep the timestamp baseline when forceContinuousTs is set.
     if (resetTs && !forceContinuousTs) {
       presentTimeUs = 0;
     }

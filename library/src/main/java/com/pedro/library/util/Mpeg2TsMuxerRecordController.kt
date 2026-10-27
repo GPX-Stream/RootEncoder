@@ -56,6 +56,7 @@ class Mpeg2TsMuxerRecordController : AsyncBaseRecordController() {
   private var sampleRate = 0
   private var isStereo = true
   private var sendInfo = false
+  // GPX R12 — the first write failure of a recording is reported once.
   @Volatile
   private var writeErrorNotified = false
 
@@ -81,6 +82,7 @@ class Mpeg2TsMuxerRecordController : AsyncBaseRecordController() {
 
   @Throws(IOException::class)
   private fun start(listener: RecordController.Listener?, tracks: RecordTracks) {
+    // GPX R12 — a new recording may report its own first write failure.
     writeErrorNotified = false
     audioPacket = when (getAudioCodec()) {
       AudioCodec.AAC, AudioCodec.HE_AAC -> AacPacket(limitSize, psiManager).apply { sendAudioInfo(sampleRate, isStereo, getAudioCodec()) }

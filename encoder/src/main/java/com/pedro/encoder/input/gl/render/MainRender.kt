@@ -209,6 +209,7 @@ class MainRender internal constructor(
     }
     val texId = if (filters.isEmpty()) cameraRender.texId else filters[filters.size - 1].texId
     screenRender.setTexId(texId)
+    // GPX R41 — remembered so a second-source draw can put the texture id back.
     lastTexId = texId
   }
 

@@ -583,6 +583,7 @@ public class VideoEncoder extends BaseEncoder implements GetCameraData {
 
   @Override
   public void formatChanged(@NonNull MediaCodec mediaCodec, @NonNull MediaFormat mediaFormat) {
+    // GPX R18 — log the format the codec negotiated.
     logNegotiatedFormat(mediaFormat);
     getVideoData.onVideoFormat(mediaFormat);
     spsPpsSetted = sendSPSandPPS(mediaFormat);
