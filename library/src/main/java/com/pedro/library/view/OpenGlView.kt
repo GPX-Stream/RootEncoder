@@ -221,10 +221,10 @@ open class OpenGlView : SurfaceView, GlInterface, OnFrameAvailableListener, Surf
     // it must hold a GlStreamInterface rather than the general GlInterface.
     override fun setStreamOverlay(bitmap: android.graphics.Bitmap?) = Unit
 
-    // GPX fork change 8 — same reasoning as setStreamOverlay above, for the record target.
+    // GPX R54 — same reasoning as setStreamOverlay above, for the record target.
     override fun setRecordOverlay(bitmap: android.graphics.Bitmap?) = Unit
 
-    // GPX fork change 10 — no separate preview-draw branch to observe here either, so no-op.
+    // GPX R56 — no separate preview-draw branch to observe here either, so no-op.
     override fun setPreviewFrameListener(listener: Runnable?) = Unit
 
     // GPX R41 — view-based rendering has one render pipeline and one SurfaceView, with no second

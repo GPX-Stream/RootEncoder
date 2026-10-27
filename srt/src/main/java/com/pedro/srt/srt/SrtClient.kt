@@ -266,24 +266,15 @@ class SrtClient(private val connectChecker: ConnectChecker) {
         val port = urlParser.port ?: 8888
         // GPX patch — getFullPath(), not path: it keeps the query string attached, which a Millicast
         // ingest expects as the streamid when the publishing token rides in the URL as "?t=".
-        //
-        // Upstream reached the same bug from the other side and its fix is deliberately not taken.
-        // Upstream falls back to getFullPath() only when the path is empty:
-        //
-        //   urlParser.getQuery("streamid") ?: urlParser.path.ifEmpty {
-        //     if (urlParser.query == null) urlParser.getFullPath() else ""
-        //   }
-        //
-        // A Millicast URL is srt://<host>:<port>/<name>?t=<token>&latency=<ms>, so the path is
-        // "<name>" — never empty — and that expression returns "<name>" with the token dropped,
-        // which the ingest rejects. Keep this line on the next upstream sync.
+        // A Millicast URL is srt://<host>:<port>/<name>?t=<token>&latency=<ms>, so its path is
+        // "<name>" and never empty. A fallback to getFullPath() that applies only to an empty path
+        // would send "<name>" with the token dropped, which the ingest rejects. Keep this line on an
+        // upstream sync.
         val path = urlParser.getQuery("streamid") ?: urlParser.getFullPath()
         commandsManager.latency = urlParser.getQuery("latency")?.toIntOrNull() ?: commandsManager.latency
-        // GPX patch, corrected by GPX R46 — re-derive the socket read timeout from the URL latency on
-        // every connect. A host that sets socketTimeout once at configure time leaves it stale after
-        // a latency change plus a reconnect. Both latency and socketTimeout are milliseconds; the
-        // earlier `latency / 1000` treated latency as microseconds and cut the budget to about one
-        // second at any latency.
+        // GPX R46 — re-derive the socket read timeout from the URL latency on every connect. A host
+        // that sets socketTimeout once at configure time leaves it stale after a latency change plus
+        // a reconnect. Latency and socketTimeout are both milliseconds, so no unit conversion applies.
         socketTimeout = socketTimeoutMsFor(commandsManager.latency)
         val passphrase = urlParser.getQuery("passphrase") ?: ""
         if (passphrase.isNotEmpty() && passphrase.length in 10..79) {

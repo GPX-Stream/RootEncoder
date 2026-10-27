@@ -299,7 +299,7 @@ public class VideoEncoder extends BaseEncoder implements GetCameraData {
     if (type == VideoCodec.H264 || type == VideoCodec.H265) {
       videoFormat.setInteger("prepend-sps-pps-to-idr-frames", 1);
     }
-    // GPX patch — set BT.709 color metadata so the encoder embeds correct VUI in the SPS NAL unit.
+    // Set BT.709 color metadata so the encoder embeds correct VUI in the SPS NAL unit.
     // Without this, devices default to smpte170m/bt470bg which ffprobe/players read incorrectly.
     // KEY_COLOR_STANDARD / KEY_COLOR_TRANSFER / KEY_COLOR_RANGE added in API 24.
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && forceBt709Color) {

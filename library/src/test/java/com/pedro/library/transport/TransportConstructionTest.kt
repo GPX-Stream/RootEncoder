@@ -9,7 +9,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * GenericTransport and WhipTransport both construct cleanly on the plain JVM under this module's
+ * GPX R33 — GenericTransport and WhipTransport both construct cleanly on the plain JVM under this module's
  * `isReturnDefaultValues = true` unit-test config (SwitchableStream itself cannot: StreamBase's
  * constructor reaches android.jar surfaces returnDefaultValues does not stub, per the mockk note
  * in gpxstream-app's libs.versions.toml — its routing and swap paths are covered by the app's

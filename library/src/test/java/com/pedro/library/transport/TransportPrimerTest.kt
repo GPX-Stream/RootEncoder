@@ -14,7 +14,7 @@ import org.junit.Test
 import java.nio.ByteBuffer
 
 /**
- * Covers TransportPrimer's replay order and buffer-independence invariants (see its KDoc), plus
+ * GPX R33 — covers TransportPrimer's replay order and buffer-independence invariants (see its KDoc), plus
  * the post-disconnect routing contract SwitchableStream relies on — all on a fake StreamTransport
  * so no Android runtime is needed.
  */

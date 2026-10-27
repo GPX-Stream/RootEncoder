@@ -60,20 +60,21 @@ know "what did we change here, and why", the answer has moved out of the file.
 **Two marker forms.** `GPX R<N>` where the change maps to a re-apply item
 (`.claude/gpx-reapply-plan-2.8.0.md`), so a marker and a checklist entry name the same work; the
 number is never reused across upstream syncs, and a re-applied change keeps the number it was
-given. `GPX patch` where no item covers it — several small changes were made alongside a larger
+given. A follow-on to an existing item may carry a letter suffix (`R3b`) when the plan has a
+checklist entry under that exact id; new work takes the next number. `GPX patch` where no item covers it — several small changes were made alongside a larger
 item and were never enumerated separately. A bare `GPX patch` is preferred over guessing a number,
 because a wrong attribution is worse than an absent one.
 
-**Coverage: 37 of the 39 files that differ from the merged upstream head carry at least one
-marker** (swept 2026-09-09 against `pedro/master` @ `1285703b`, R35; the 2 unmarked are
-`TransportPrimerTest.kt` and `TransportConstructionTest.kt`, wholly new R33 test files with
-no upstream code to mark against). The baseline is the *merged* upstream head,
+**Coverage: all 55 code files that differ from the merged upstream head carry at least one
+marker, and a sweep found no changed region without a marker within 14 lines above it** (swept
+2026-10-27 against `pedro/master` @ `f1bbda7ca`, R57; the sweep script compares each diff hunk
+against the marker lines). The baseline is the *merged* upstream head,
 not the branch point: since R26 and R27 brought upstream commits in, a diff against the original
 `9a9ca124f` base also lists files upstream changed, which carry no GPX work and never will. Two
 caveats on reading a grep as complete:
 
-- `StreamBase.kt` is a dense grouped rewrite where the marked regions are an index rather than a
-  full inventory; its class KDoc says so.
+- `StreamBase.kt` is a dense grouped rewrite; its class KDoc lists the groups, and each changed
+  region carries its own marker.
 - A marker is a comment, so a change with nothing to attach one to may be unmarked.
 
 `git diff pedro/master -- <file>` remains the authority; the markers are what make the divergence
@@ -146,17 +147,17 @@ swappable network-transport seam (`library/src/main/java/com/pedro/library/trans
 `StreamTransport`, `GenericTransport`, `WhipTransport`, `SwitchableStream`, `TransportPrimer`) —
 consumer issue #110, so a protocol change no longer forces a full rebuild of the recording path —
 and R34, a synchronized GL-init wait in `GlStreamInterface.start()` (consumer issue #108) so a
-timeout or exception there throws instead of being silently swallowed. Three further,
-non-upstream-numbered fork changes ride the same head: fork change 8, `setRecordOverlay` — a
+timeout or exception there throws instead of being silently swallowed. Three further
+fork changes ride the same head: R54, `setRecordOverlay` — a
 second `StreamOverlayRender` instance drawn into the record encoder target only, giving the
-stream and the recording independent overlay composites; fork change 9, burning that same
+stream and the recording independent overlay composites; R55, burning that same
 record-target overlay into photo captures too, so a VOD thumbnail always matches the recording it
-is a thumbnail of; and fork change 10, `GlInterface.setPreviewFrameListener` (consumer issue
+is a thumbnail of; and R56, `GlInterface.setPreviewFrameListener` (consumer issue
 #215) — a no-op-unless-set, exception-isolated callback fired once per GL frame actually drawn
 into the attached preview target, independent of streaming/recording state, so the consumer can
 build a local-preview liveness watchdog without a second listener on the camera's own
 `SurfaceTexture` (which the fork already claims exclusively for its own render loop). Zero edits
-to `StreamBase.kt` from any of R33/R34/fork change 8/9/10. `gradlew assembleDebug test` passes across
+to `StreamBase.kt` from any of R33/R34/R54/R55/R56. `gradlew assembleDebug test` passes across
 every module and the sample app with all of the above in the tree. On top of this, R35 merges
 upstream `pedro/master` @ `1285703b` (a new congestion-aware `QueueAwareBitrateAdapter` utility
 not wired into anything GPX touches, a Camera2 metering-region-clear correctness fix, a
@@ -166,7 +167,7 @@ not wired into anything GPX touches, a Camera2 metering-region-clear correctness
 with no conflict). A consumer pin move onto this head therefore also promotes the 27
 previously-unbenched R31/R32 commits at the same time, so the next bench gate consciously
 widens to cover R31/R32's A/V-sync and frame-pacing watch items alongside R33's live protocol
-swaps, R34's preview-attach fix, fork change 8/9/10's own composite/liveness behavior, and
+swaps, R34's preview-attach fix, R54/R55/R56's own composite/liveness behavior, and
 R35's teardown-order change (ordinary stop/release paths, not a new invariant — low watch
 priority, but new to this range).
 
@@ -204,7 +205,7 @@ other slice. Two parts:
   `getSecondarySurfaceTexture()`/`getSecondarySurface()` (attach a second open camera to these, the
   same way the existing ones attach the first) and `setStreamSource(GlCameraSource)`/
   `setRecordSource(GlCameraSource)` — which of the two open sources each render target draws its
-  base picture from, mirroring fork change 8's `setStreamOverlay`/`setRecordOverlay` per-target
+  base picture from, mirroring R54's `setStreamOverlay`/`setRecordOverlay` per-target
   shape. The second pipeline is fully lazy: nothing is allocated until a caller actually asks for
   the secondary SurfaceTexture, so a consumer that never touches this is unaffected — same texture,
   same draw calls, same cost as before this existed. Switching a target's source is a GL-side
@@ -215,7 +216,7 @@ other slice. Two parts:
   capture are unchanged — Decision 4 names only the stream and record targets, so those three keep
   drawing the primary/filtered pipeline unconditionally regardless of what `setRecordSource` is set
   to; a VOD thumbnail can therefore show a different camera than what `setRecordSource` just routed
-  into the recording file, a known, deliberately out-of-scope asymmetry with fork change 8/9's
+  into the recording file, a known, deliberately out-of-scope asymmetry with R54/R55's
   overlay-follows-record precedent.
 
 `gradlew clean assembleDebug test` passes across every module and the sample app. Not

@@ -89,11 +89,11 @@ class GlStreamInterface(private val context: Context): OnFrameAvailableListener,
   private val mainRender = MainRender()
   // GPX R11 — drawn into the stream encoder surface only, never the record encoder, preview or photo.
   private val streamOverlayRender = StreamOverlayRender()
-  // GPX fork change 8 — the record-target counterpart: drawn into the record encoder surface only,
+  // GPX R54 — the record-target counterpart: drawn into the record encoder surface only,
   // never the stream encoder, preview or photo. A second independent StreamOverlayRender instance
   // rather than a new class — that class is already generic, see its own KDoc.
   private val recordOverlayRender = StreamOverlayRender()
-  // GPX fork change 10 — the local preview liveness signal (gpxstream-app #215). Volatile: set from
+  // GPX R56 — the local preview liveness signal (gpxstream-app #215). Volatile: set from
   // the caller's thread, read on the GL render thread.
   @Volatile
   private var previewFrameListener: Runnable? = null
@@ -215,13 +215,13 @@ class GlStreamInterface(private val context: Context): OnFrameAvailableListener,
     streamOverlayRender.setBitmap(bitmap)
   }
 
-  // GPX fork change 8 — the record-target counterpart to setStreamOverlay above. Same no-op-on-
+  // GPX R54 — the record-target counterpart to setStreamOverlay above. Same no-op-on-
   // OpenGlView caveat applies.
   override fun setRecordOverlay(bitmap: Bitmap?) {
     recordOverlayRender.setBitmap(bitmap)
   }
 
-  // GPX fork change 10 — the preview liveness signal. Same no-op-on-OpenGlView caveat applies.
+  // GPX R56 — the preview liveness signal. Same no-op-on-OpenGlView caveat applies.
   override fun setPreviewFrameListener(listener: Runnable?) {
     previewFrameListener = listener
   }
@@ -471,7 +471,7 @@ class GlStreamInterface(private val context: Context): OnFrameAvailableListener,
     // handles. The
     // next draw on a fresh context re-creates them and re-uploads a still-visible bitmap.
     streamOverlayRender.release()
-    // GPX fork change 8 — same reasoning, for the record-target overlay plane.
+    // GPX R54 — same reasoning, for the record-target overlay plane.
     recordOverlayRender.release()
   }
 
@@ -534,7 +534,7 @@ class GlStreamInterface(private val context: Context): OnFrameAvailableListener,
         }
         // GPX R11 — drawn over the frame content into this surface only. The record encoder branch
         // renders from its own selected source but draws its own recordOverlayRender instead
-        // (GPX fork change 8), not this one.
+        // (GPX R54), not this one.
         streamOverlayRender.draw(context)
         surfaceManagerEncoder.setPresentationTime(timestamp)
         surfaceManagerEncoder.swapBuffer()
@@ -555,7 +555,7 @@ class GlStreamInterface(private val context: Context): OnFrameAvailableListener,
           mainRender.drawScreenEncoder(w, h, orientation, streamOrientation,
             isStreamVerticalFlip, isStreamHorizontalFlip, streamViewPort)
         }
-        // GPX fork change 8 — this destination's own overlay plane, independent of streamOverlayRender.
+        // GPX R54 — this destination's own overlay plane, independent of streamOverlayRender.
         recordOverlayRender.draw(context)
         // Fix: same timestamp fix for the dedicated record surface
         surfaceManagerEncoderRecord.setPresentationTime(timestamp)
@@ -576,7 +576,7 @@ class GlStreamInterface(private val context: Context): OnFrameAvailableListener,
           mainRender.drawScreen(photoWidth, photoHeight, AspectRatioMode.NONE,
             streamOrientation, isStreamVerticalFlip, isStreamHorizontalFlip, streamViewPort)
         }
-        // GPX fork change 9 — burn the RECORDING-destination overlay composite into the photo
+        // GPX R55 — burn the RECORDING-destination overlay composite into the photo
         // readback too, same call shape as recordOverlayRender.draw(context) above. Without this a
         // photo taken while a RECORDING-destined overlay item is showing carried no overlay, so a
         // VOD thumbnail (the app's only photo-capture caller) never matched the recording it was a
@@ -599,7 +599,7 @@ class GlStreamInterface(private val context: Context): OnFrameAvailableListener,
         mainRender.drawScreenPreview(w, h, orientationPreview, aspectRatioMode, previewOrientation,
           isPreviewVerticalFlip, isPreviewHorizontalFlip, previewViewPort)
         surfaceManagerPreview.swapBuffer()
-        // GPX fork change 10 — the preview liveness signal, fired once this frame's preview draw
+        // GPX R56 — the preview liveness signal, fired once this frame's preview draw
         // actually swapped. Isolated so a listener fault cannot break rendering (same posture as
         // GPX R32's streamVideoFrameTimingListener).
         try {

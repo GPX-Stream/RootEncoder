@@ -38,7 +38,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * Nothing here is stream- or record-specific. GlStreamInterface owns one instance per
  * destination it wants an independent overlay on — GPX R11's own streamOverlayRender, drawn into
- * the stream encoder surface only, and (GPX fork change 8) a second recordOverlayRender, drawn
+ * the stream encoder surface only, and (GPX R54) a second recordOverlayRender, drawn
  * into the record encoder surface only — each fed by its own [setBitmap] call, so the two
  * composites can differ.
  *

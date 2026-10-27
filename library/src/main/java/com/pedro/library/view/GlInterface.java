@@ -231,7 +231,7 @@ public interface GlInterface {
   void setStreamOverlay(@Nullable Bitmap bitmap);
 
   /**
-   * GPX fork change 8 — composite a full-frame bitmap into the record encoder output only.
+   * GPX R54 — composite a full-frame bitmap into the record encoder output only.
    *
    * Mirrors {@link #setStreamOverlay}, but for the record target: this plane reaches the saved
    * recording file alone, leaving the stream encoder, preview and photo captures untouched. Pass
@@ -245,7 +245,7 @@ public interface GlInterface {
   void setRecordOverlay(@Nullable Bitmap bitmap);
 
   /**
-   * GPX fork change 10 — a local preview liveness signal (gpxstream-app #215).
+   * GPX R56 — a local preview liveness signal (gpxstream-app #215).
    *
    * Invoked once per GL frame actually drawn into the attached preview target — the same "render
    * preview" block that composites and swaps the preview surface every draw, independent of

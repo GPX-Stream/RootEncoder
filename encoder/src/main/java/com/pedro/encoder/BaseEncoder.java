@@ -122,11 +122,11 @@ public abstract class BaseEncoder implements EncoderCallback {
 
   protected void setCallback() {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && type != AudioCodec.G711) {
-      // GPX patch — this method creates a HandlerThread per call. Every caller that reaches it
-      // prepare path ran stop() first, which quits and joins the previous thread. VideoEncoder's
-      // configure-retry calls setCallback twice with no intervening stop(), so retire any thread
-      // still held rather than leaving one per attempt. Idempotent after stop(): quitting an
-      // already-quit HandlerThread does nothing.
+      // GPX R17 — this method creates a HandlerThread per call. Callers on the prepare path run
+      // stop() first, which quits and joins the previous thread. VideoEncoder's configure-retry
+      // calls setCallback twice with no stop() in between, so retire any thread still held rather
+      // than leaving one per attempt. Idempotent after stop(): quitting an already-quit
+      // HandlerThread does nothing.
       releaseCallbackThread();
       handlerThread = new HandlerThread(TAG);
       handlerThread.start();
@@ -137,10 +137,9 @@ public abstract class BaseEncoder implements EncoderCallback {
   }
 
   /**
-   * GPX patch — quit and join whatever HandlerThread {@link #setCallback()} last created, if any.
-   * Split out so
-   * a caller that must re-register the async callback without going through the full {@link #stop()}
-   * path can still retire the old thread.
+   * GPX R17 — quit and join whatever HandlerThread {@link #setCallback()} last created, if any.
+   * Split out so a caller that must re-register the async callback without going through the full
+   * {@link #stop()} path can still retire the old thread.
    */
   protected void releaseCallbackThread() {
     if (handlerThread == null) return;

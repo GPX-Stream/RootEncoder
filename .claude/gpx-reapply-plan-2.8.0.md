@@ -324,6 +324,17 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
         `gpxstream-app`'s `libs.versions.toml` mockk note already carries) — so its
         delegate-routing and swap paths are covered by the consumer's driver tests through the
         composite build, plus the bench gate.
+- [x] R34 — `GlStreamInterface.start()` waits for the queued GL-init task and throws when it fails
+      or times out (`gpxstream-app` issue #108) — `3e3d583f4`
+      **What changes.** `start()` tracks the GL-init task as a `Future` and awaits it with the same
+      bounded-wait-then-throw shape R16 uses for `pendingRelease` just above it. A timeout or an
+      exception inside `mainRender.initGl()` surfaces as an `IllegalStateException`. Upstream's
+      `secureSubmit` has an empty catch, so the same failure leaves `start()` returning with
+      `running` false and `mainRender` possibly half initialised.
+      **Why a caller cares.** `StreamBase.startPreview()`, `warmSources()` and `startSources()` read
+      `glInterface.surfaceTexture` on the next line with no wait of their own. A swallowed failure
+      hands the camera a missing or stale `SurfaceTexture`, which showed up as a false camera-start
+      error over a healthy headless recording. Markers: `git grep -n "GPX R34"`.
 - [x] R35 — Merge upstream `pedro/master` @ `1285703b` (18 commits, 14 non-merge, past the
       `300d99fe1` R31 base). Carries no new GPX code, so it adds no `GPX R35` marker. What
       arrives:
@@ -541,7 +552,7 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       - Preview, multi-preview and photo capture are deliberately unchanged — Decision 4 names
         only the stream and record targets, so those three keep drawing the primary/filtered
         pipeline regardless of `setRecordSource`. Noted as a known, deliberately out-of-scope
-        asymmetry with fork change 8/9's overlay-follows-record precedent, not a gap in this
+        asymmetry with R54/R55's overlay-follows-record precedent, not a gap in this
         item.
       - `gradlew clean assembleDebug test` passes across every module and the sample app.
         Marker check: `git grep -n "GPX R41"` finds all 26 sites across the 5 changed files
@@ -785,7 +796,7 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       **The bug.** With the recording riding the second camera (R41, `setRecordSource(SECONDARY)`),
       the record encoder block of `GlStreamInterface.draw` drew from the second camera, but the
       photo block always drew `mainRender.drawScreen`, which samples the first (stream) camera, and
-      then burned the recording's overlay (fork change 9) over it. The consumer takes its VOD
+      then burned the recording's overlay (R55) over it. The consumer takes its VOD
       thumbnails and scrubber tiles through that readback, so on a split unit they showed the
       stream's camera while the file held the recording's.
       **The fix.** `MainRender.drawScreenFromSecondary` mirrors `drawScreenEncoderFromSecondary` for
@@ -915,6 +926,48 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       **Tests.** `PeerAddressTest` (8 cases, including hostile hosts) and one `InboundSilenceTest`
       case that sends a forged RTP packet from another host and checks the clock is not stamped; with
       `handleMessages` reading unfiltered it fails. Markers: `git grep -n "GPX R53"`.
+
+- [x] R54 — a second overlay render plane for the record target, `GlInterface.setRecordOverlay`
+      (S12 overlay editor in `gpxstream-app`) — `3955f0fe6`
+      A second `StreamOverlayRender` instance draws into the record encoder surface only, so the
+      stream and the recording file can carry different overlay composites. `OpenGlView` has the
+      matching no-op. Numbered here on 2026-10-27; the markers read `GPX R54`.
+      Markers: `git grep -n "GPX R54"`.
+- [x] R55 — the record target's overlay is also drawn into photo captures — `6a053ff56`
+      The photo block of `GlStreamInterface.draw()` calls `recordOverlayRender.draw(...)` after
+      `mainRender.drawScreen()` and before the bitmap readback, so a VOD thumbnail matches the
+      recording file. R50 later made the same block follow the record target's camera. Numbered here
+      on 2026-10-27. Markers: `git grep -n "GPX R55"`.
+- [x] R56 — `GlInterface.setPreviewFrameListener`, a local-preview liveness signal
+      (`gpxstream-app` issue #215) — `054e96fdb`
+      A listener fires once per GL frame drawn into the attached preview, after the preview's
+      `swapBuffer()`, independent of streaming and recording state. It is exception-isolated, does
+      nothing unless set, and `OpenGlView` has the matching no-op. The consumer builds its
+      preview-liveness watchdog on it without a second listener on the camera's `SurfaceTexture`,
+      which the render loop claims. Numbered here on 2026-10-27. Markers: `git grep -n "GPX R56"`.
+
+- [x] R57 — WHIP connect job: a stop during connect is not reported as a fault, and a failed
+      attempt releases its media socket (the R53 audit's follow-ups, 2026-10-27; fork edit approved
+      by Andy the same day)
+      **What a person sees.** Pressing stop while the app is still connecting no longer ends with an
+      "Error configure stream" failure. `disconnect()` closes the media socket, the connect job's
+      read then fails, and the failure handler used to report that as a fault. It now recognises the
+      socket as closed on purpose (`iceSocket` no longer points at it), logs it and returns, and a
+      cancelled attempt ends without a report.
+      **Socket release.** An exception in the connect job closes the socket that attempt opened. A
+      missing DTLS certificate or fingerprint after nomination closes it and reports a failure; it
+      returned silently with the socket open before. `candidateResponses`, written and never read, is
+      removed.
+      **Not changed.** Three earlier silent `return@launch` lines (no local or remote ICE username
+      fragment, no remote candidates) still end the attempt without a report; they open no socket.
+      **Known and accepted.** The ICE retransmit cannot work with `SocketType.JAVA`, because a
+      blocking read there cannot be cancelled by the 500 ms timeout; the app uses the default
+      socket type. The DTLS wait is 10 s (upstream's value) where the fork's was 5 s, so a failed
+      handshake is reported up to 5 s later.
+      **Tests.** The attempt needs a live signalling server and sockets, so the decision has no unit
+      test; `:whip:testDebugUnitTest` is green. For the bench: stop a WHIP publish while it is
+      still connecting and check no "Error configure stream" failure follows.
+      Markers: `git grep -n "GPX R57"`.
 
 ## Correction to R14's scope
 
