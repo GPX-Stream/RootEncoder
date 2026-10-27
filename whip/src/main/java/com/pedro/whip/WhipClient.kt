@@ -31,6 +31,7 @@ import com.pedro.whip.webrtc.stun.GatheringMode
 import com.pedro.whip.webrtc.stun.HeaderType
 import com.pedro.whip.webrtc.stun.StunAttribute
 import com.pedro.whip.webrtc.stun.StunAttributeValueParser
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -225,6 +226,9 @@ class WhipClient(private val connectChecker: ConnectChecker) {
                     return@launch
                 }
 
+                // GPX R57 — the media socket this attempt opened, so the failure handler below can tell
+                // a disconnect that closed it on purpose from a fault, and can close it on a fault.
+                var connectSocket: UdpStreamSocket? = null
                 val error = runCatching {
                     commandsManager.updateTimestamp()
                     commandsManager.setUrl(host, port, path, tlsEnabled)
@@ -294,6 +298,7 @@ class WhipClient(private val connectChecker: ConnectChecker) {
                     socket.setRemoteAddress(host, port)
                     // GPX R14 — held so disconnect() can close it.
                     iceSocket = socket
+                    connectSocket = socket
 
                     val dtlsTransport = DtlsTransport(socket)
                     val requestId = commandsManager.generateTransactionId()
@@ -312,7 +317,6 @@ class WhipClient(private val connectChecker: ConnectChecker) {
                     // timeout, bounded, then fail with a message that says which step failed.
                     val iceRtoMs = 500L
                     val iceMaxAttempts = 14 // about 7 seconds
-                    var candidateResponses = 0
                     var requestSuccessReceived = false
                     var iceAttempts = 0
                     while (!requestSuccessReceived) {
@@ -330,7 +334,6 @@ class WhipClient(private val connectChecker: ConnectChecker) {
                         if (command.header.id.contentEquals(requestId) && command.header.type == HeaderType.SUCCESS) {
                             requestSuccessReceived = true
                         } else if (command.header.type == HeaderType.REQUEST) {
-                            candidateResponses++
                             val xorAddress = StunAttributeValueParser.createXorMappedAddress(command.header.id, host, port)
                             val responseAttributes = listOf(
                                 StunAttribute(AttributeType.XOR_MAPPED_ADDRESS, xorAddress)
@@ -374,7 +377,6 @@ class WhipClient(private val connectChecker: ConnectChecker) {
                         if (command.header.id.contentEquals(nominateId) && command.header.type == HeaderType.SUCCESS) {
                             nominateSuccessReceived = true
                         } else if (command.header.type == HeaderType.REQUEST) {
-                            candidateResponses++
                             val xorAddress = StunAttributeValueParser.createXorMappedAddress(command.header.id, host, port)
                             val responseAttributes = listOf(
                                 StunAttribute(AttributeType.XOR_MAPPED_ADDRESS, xorAddress)
@@ -391,8 +393,18 @@ class WhipClient(private val connectChecker: ConnectChecker) {
                         return@launch
                     }
 
-                    val certificate = commandsManager.certificate ?: return@launch
-                    val fingerprint = commandsManager.remoteSdpInfo?.fingerprint ?: return@launch
+                    val certificate = commandsManager.certificate
+                    val fingerprint = commandsManager.remoteSdpInfo?.fingerprint
+                    if (certificate == null || fingerprint == null) {
+                        // GPX R57 — release the socket and report, rather than return with the media
+                        // socket open and the connection silent.
+                        runCatching { socket.close() }
+                        iceSocket = null
+                        onMainThread {
+                            connectChecker.onConnectionFailed("Error configure stream, DTLS certificate or fingerprint missing")
+                        }
+                        return@launch
+                    }
 
                     val dtlsResult = CompletableDeferred<Result<SrtpKeys>>()
                     val isDtlsServer = commandsManager.remoteSdpInfo?.isActiveMode ?: false
@@ -455,6 +467,19 @@ class WhipClient(private val connectChecker: ConnectChecker) {
                     inboundSilence.start()
                 }.exceptionOrNull()
                 if (error != null) {
+                    // GPX R57 — a cancelled attempt ends quietly. A read that failed because
+                    // disconnect() closed the socket (iceSocket no longer points at it) is a stop, not a
+                    // fault, so nothing is reported. Any other fault releases the socket it opened.
+                    if (error is CancellationException) throw error
+                    val failedSocket = connectSocket
+                    if (failedSocket != null && iceSocket !== failedSocket) {
+                        Log.i(TAG, "connect interrupted by disconnect: ${error.validMessage()}")
+                        return@launch
+                    }
+                    if (failedSocket != null) {
+                        runCatching { failedSocket.close() }
+                        iceSocket = null
+                    }
                     Log.e(TAG, "connection error", error)
                     onMainThread {
                         connectChecker.onConnectionFailed("Error configure stream, ${error.validMessage()}")
