@@ -22,6 +22,7 @@ import com.pedro.whip.dtls.DtlsTransport
 import com.pedro.whip.dtls.SrtpKeys
 import com.pedro.whip.utils.InboundSilenceTracker
 import com.pedro.whip.utils.Network
+import com.pedro.whip.utils.readFrom
 import com.pedro.whip.utils.ReceiveLoop
 import com.pedro.whip.webrtc.CandidateType
 import com.pedro.whip.webrtc.CommandsManager
@@ -291,6 +292,7 @@ class WhipClient(private val connectChecker: ConnectChecker) {
                     val socket = StreamSocket.createUdpSocket(socketType, bindHost, 0, socketTimeout)
                     socket.bind()
                     socket.setRemoteAddress(host, port)
+                    // GPX R14 — held so disconnect() can close it.
                     iceSocket = socket
 
                     val dtlsTransport = DtlsTransport(socket)
@@ -314,7 +316,7 @@ class WhipClient(private val connectChecker: ConnectChecker) {
                     var requestSuccessReceived = false
                     var iceAttempts = 0
                     while (!requestSuccessReceived) {
-                        val bytes = withTimeoutOrNull(iceRtoMs.milliseconds) { socket.read() }
+                        val bytes = withTimeoutOrNull(iceRtoMs.milliseconds) { socket.readFrom(host) }
                         if (bytes == null) {
                             if (++iceAttempts >= iceMaxAttempts) break
                             commandsManager.writeStun(HeaderType.REQUEST, requestId, attributes, socket)
@@ -358,7 +360,7 @@ class WhipClient(private val connectChecker: ConnectChecker) {
                     var nominateSuccessReceived = false
                     var nominateAttempts = 0
                     while (!nominateSuccessReceived) {
-                        val bytes = withTimeoutOrNull(iceRtoMs.milliseconds) { socket.read() }
+                        val bytes = withTimeoutOrNull(iceRtoMs.milliseconds) { socket.readFrom(host) }
                         if (bytes == null) {
                             if (++nominateAttempts >= iceMaxAttempts) break
                             commandsManager.writeStun(HeaderType.REQUEST, nominateId, nominateAttributes, socket)
@@ -468,7 +470,8 @@ class WhipClient(private val connectChecker: ConnectChecker) {
       host: String, port: Int,
       dtlsTransport: DtlsTransport
     ) {
-        val bytes = socket.read()
+        // GPX R53 — only datagrams from the selected remote candidate's host are handled.
+        val bytes = socket.readFrom(host)
         if (bytes.isEmpty()) return
         val first = bytes[0].toInt() and 0xFF
         when (first) {

@@ -37,13 +37,33 @@ class InboundSilenceTest {
     override fun invoke(): Long = now
   }
 
-  /** Returns [packet] from every read; nothing else is exercised by handleMessages' counting path. */
+  /** Returns [packet] from every read, sent from 127.0.0.1; nothing else is exercised by handleMessages' counting path. */
   private class FakeSocket(private val packet: ByteArray) : UdpStreamSocket() {
     override suspend fun bind() {}
     override suspend fun write(bytes: ByteArray) {}
     override suspend fun write(bytes: ByteArray, host: String, port: Int) {}
     override suspend fun read(): ByteArray = packet
-    override suspend fun readPacket(): UdpPacket = throw UnsupportedOperationException()
+    override suspend fun readPacket(): UdpPacket = UdpPacket(packet, packet.size, "127.0.0.1", 9)
+    override suspend fun setRemoteAddress(host: String, port: Int) {}
+    override suspend fun getLocalHost(): String = ""
+    override suspend fun getLocalPort(): Int = 0
+    override suspend fun connect() {}
+    override suspend fun close() {}
+    override fun isConnected(): Boolean = true
+    override fun isReachable(): Boolean = true
+  }
+
+  /** Returns each of [packets] in turn, with its own source host. */
+  private class ScriptedSocket(private val packets: List<Pair<String, ByteArray>>) : UdpStreamSocket() {
+    private var next = 0
+    override suspend fun bind() {}
+    override suspend fun write(bytes: ByteArray) {}
+    override suspend fun write(bytes: ByteArray, host: String, port: Int) {}
+    override suspend fun read(): ByteArray = readPacket().data
+    override suspend fun readPacket(): UdpPacket {
+      val (host, bytes) = packets[next++]
+      return UdpPacket(bytes, bytes.size, host, 9)
+    }
     override suspend fun setRemoteAddress(host: String, port: Int) {}
     override suspend fun getLocalHost(): String = ""
     override suspend fun getLocalPort(): Int = 0
@@ -110,6 +130,17 @@ class InboundSilenceTest {
       val socket = FakeSocket(byteArrayOf(first.toByte(), 0x01, 0x00, 0x00))
       client.handleMessages(socket, "127.0.0.1", 9, DtlsTransport(socket))
     }
+    assertEquals(-1L, client.inboundSilence.silenceMs())
+  }
+
+  // GPX R53 — a forged RTP/RTCP datagram from another host must not stamp the silence clock.
+  @Test
+  fun `a media-plane packet from another host is dropped and does not stamp the tracker`() = runTest {
+    val client = WhipClient(mock<ConnectChecker>())
+    val rtp = byteArrayOf(0x80.toByte(), 0xC9.toByte(), 0x00, 0x01)
+    val stun = byteArrayOf(0x00, 0x01, 0x00, 0x00)
+    val socket = ScriptedSocket(listOf("198.51.100.9" to rtp, "127.0.0.1" to stun))
+    client.handleMessages(socket, "127.0.0.1", 9, DtlsTransport(socket))
     assertEquals(-1L, client.inboundSilence.silenceMs())
   }
 }

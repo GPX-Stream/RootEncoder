@@ -897,6 +897,24 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       exercised on a device. For the bench: a WHIP publish to the Millicast ingest (passive answer, so the DTLS
       client path now runs upstream's code), an SRT publish with induced loss (retransmit budget), and
       a record stop under a stalled write.
+- [x] R53 — the WHIP media socket drops datagrams from any host but the chosen remote candidate
+      (an automated security review of the R52 push, 2026-10-27; fork edit approved by Andy the same
+      day).
+      **The gap.** Upstream's change in R52 binds the UDP socket instead of connecting it, so a
+      server may answer from a different port. That also stopped the OS from dropping datagrams from
+      other hosts. Anything that reached the port went to STUN, to the DTLS handshake queue, or, when
+      its first byte was 128–191, stamped R42's inbound-silence clock, so a forged packet could hide a
+      real silence from the consumer's liveness check. A forged DTLS packet cannot create a session
+      (the server's certificate fingerprint is checked) but can disturb a handshake.
+      **The fix.** `PeerAddress.isSameHost` and `UdpStreamSocket.readFrom(peerHost)`
+      (`whip/.../utils/PeerAddress.kt`) read until a datagram from the remote candidate's host
+      arrives and drop the rest. The port is not compared, for the reason above. The IP is compared
+      ignoring case, scope id, brackets and the IPv4-mapped IPv6 form; a remote that is not an IP
+      literal accepts any source. The ICE binding and nomination loops and `handleMessages` all read
+      through it.
+      **Tests.** `PeerAddressTest` (8 cases, including hostile hosts) and one `InboundSilenceTest`
+      case that sends a forged RTP packet from another host and checks the clock is not stamped; with
+      `handleMessages` reading unfiltered it fails. Markers: `git grep -n "GPX R53"`.
 
 ## Correction to R14's scope
 
