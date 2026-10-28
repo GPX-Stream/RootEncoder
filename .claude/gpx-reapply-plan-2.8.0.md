@@ -732,8 +732,8 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       **The fix.** `ReceiveLoop` (new, `whip/.../utils/ReceiveLoop.kt`, pure) owns the loop:
       - Our own cancellation: rethrown, nothing reported (`ensureActive()` after the catch).
       - A failure after we closed the socket: nothing reported. `iceSocket !== socket` is the test;
-        `disconnect()` now clears the field before closing, so the field already says "closed on
-        purpose" when the read fails.
+        `disconnect()` clears the field before closing, so the field already says "closed on
+        purpose" when the read fails (the DTLS close is covered by R58).
       - `SocketTimeoutException`: survived, read again. A quiet link is R42's job.
       - Anything else, including a cancellation raised by the socket while this coroutine is still
         active: reported once through `connectChecker.onConnectionFailed("Receive loop failed, ...")`
@@ -968,6 +968,23 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       test; `:whip:testDebugUnitTest` is green. For the bench: stop a WHIP publish while it is
       still connecting and check no "Error configure stream" failure follows.
       Markers: `git grep -n "GPX R57"`.
+- [x] R58 — a stop of a running WHIP stream is not reported as "Receive loop failed" (fork edit
+      approved by Andy 2026-10-28; found on the bench PDT the same day)
+      **What a person sees.** Nothing: the consumer is already stopping when the report arrives and
+      ignores it. The blackbox, though, held a `ConnectionFailed(reason=Receive loop failed,
+      ProducerCoroutine was cancelled)` entry on every WHIP stop of a running stream, two of two on the bench.
+      **The cause.** `disconnect()` closed the DTLS connection first. That fails the receive loop's
+      read (a cancellation from the DTLS transport's producer) while `iceSocket` still pointed at the
+      media socket, so R47's `isClosing` test said "not on purpose" and the loop reported a fault.
+      R47's own note says the field is cleared before the close; that held for the socket close but
+      not for the DTLS close.
+      **The fix.** `disconnect()` captures and clears `iceSocket` as its first step, then closes DTLS,
+      stops the sender and closes the captured socket, in the same relative order as before. No
+      other call order changes, and the retry path (`disconnect(false)`) takes the same ordering.
+      **Tests.** `WhipClient.disconnect` needs a live ingest, so there is no unit test;
+      `:whip:testDebugUnitTest` stays green. For the bench: stop a running WHIP stream and check the
+      blackbox holds no `Receive loop failed` entry, and that a fault with the stream still running
+      is still reported. Markers: `git grep -n "GPX R58"`.
 
 ## Correction to R14's scope
 

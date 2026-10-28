@@ -67,7 +67,7 @@ because a wrong attribution is worse than an absent one.
 
 **Coverage: all 55 code files that differ from the merged upstream head carry at least one
 marker, and a sweep found no changed region without a marker within 14 lines above it** (swept
-2026-10-27 against `pedro/master` @ `f1bbda7ca`, R57; the sweep script compares each diff hunk
+2026-10-27 against `pedro/master` @ `f1bbda7ca`, R58; the sweep script compares each diff hunk
 against the marker lines). The baseline is the *merged* upstream head,
 not the branch point: since R26 and R27 brought upstream commits in, a diff against the original
 `9a9ca124f` base also lists files upstream changed, which carry no GPX work and never will. Two

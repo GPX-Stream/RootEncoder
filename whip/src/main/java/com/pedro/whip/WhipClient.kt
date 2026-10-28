@@ -533,16 +533,17 @@ class WhipClient(private val connectChecker: ConnectChecker) {
     }
 
     private suspend fun disconnect(clear: Boolean) {
+        // GPX R58 — clear the field before anything is torn down. R47's receive loop reads "iceSocket
+        // no longer this socket" as "closed on purpose", and closing the DTLS connection below already
+        // fails the loop's read, so the field must say so before that close.
+        val closing = iceSocket
+        iceSocket = null
         dtlsConnection?.close()
         dtlsConnection = null
         if (isStreaming) whipSender.stop()
         // GPX R14 — close the ICE and media UDP socket so an in-flight STUN read unblocks and the OS
         // stops answering the server's binding checks. Without this the connect job's read loop kept
         // STUN alive after a stop and the server-side session lingered.
-        // GPX R47 — clear the field first, then close: the receive loop reads "iceSocket no longer
-        // this socket" as "closed on purpose", so the field must already say so when the read fails.
-        val closing = iceSocket
-        iceSocket = null
         runCatching { closing?.close() }
         val error = runCatching {
             withTimeoutOrNull(100.milliseconds) {
