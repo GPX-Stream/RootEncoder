@@ -5,8 +5,6 @@ import android.util.Log
 import com.pedro.common.AudioCodec
 import com.pedro.common.VideoCodec
 import com.pedro.common.frame.MediaFrame
-import com.pedro.common.isKeyframe
-import com.pedro.common.toMediaCodecBufferInfo
 import com.pedro.encoder.video.VideoEncoderHelper
 import com.pedro.library.base.recording.AsyncBaseRecordController
 import com.pedro.library.base.recording.RecordController
@@ -180,7 +178,7 @@ class Mpeg2TsMuxerRecordController : AsyncBaseRecordController() {
           // GPX R59 — a file opens on a keyframe. Delta frames before the first keyframe cannot be
           // decoded on their own, and the keyframe that supplied the codec headers is written
           // instead of being consumed by getVideoInfo.
-          val isKey = frame.info.isKeyFrame || frame.info.toMediaCodecBufferInfo().isKeyframe() || isKeyFrame(frame.data)
+          val isKey = frame.info.isKeyFrame || isKeyFrame(frame.data)
           if (recordStatus == RecordController.Status.STARTED) {
             getVideoInfo(frame.data, frame.info.size, isKey)
           }
@@ -197,7 +195,10 @@ class Mpeg2TsMuxerRecordController : AsyncBaseRecordController() {
         }
       }
       MediaFrame.Type.AUDIO -> {
-        if (recordStatus == RecordController.Status.RECORDING && tracks != RecordTracks.VIDEO) {
+        // GPX R59 — a file that carries video starts with the video keyframe, so audio waits for it too
+        // (setVideoFormat can move the status to RECORDING before any keyframe arrived).
+        val waitingForVideo = tracks != RecordTracks.AUDIO && waitingForFirstKeyFrame
+        if (recordStatus == RecordController.Status.RECORDING && tracks != RecordTracks.VIDEO && !waitingForVideo) {
           writeMpeg2TsPacket(frame)
         }
       }
@@ -219,11 +220,11 @@ class Mpeg2TsMuxerRecordController : AsyncBaseRecordController() {
       if (!sendInfo) {
         when (videoPacket) {
           is H264Packet -> {
-            val buffers = extractH264SpsPps(buffer.duplicate(), size)
+            val buffers = extractParameterSets(buffer.duplicate(), size, intArrayOf(7, 8)) { (it.toInt() and 0x1F) }
             if (buffers != null) {
               Log.i(TAG, "manual sps/pps extraction success")
-              val oldSps = buffers.first
-              val oldPps = buffers.second
+              val oldSps = buffers[0]
+              val oldPps = buffers[1]
               (videoPacket as H264Packet).sendVideoInfo(oldSps, oldPps)
               sendInfo = true
             } else {
@@ -232,8 +233,9 @@ class Mpeg2TsMuxerRecordController : AsyncBaseRecordController() {
           }
 
           is H265Packet -> {
-            val byteBufferList = VideoEncoderHelper.extractVpsSpsPpsFromH265(buffer.duplicate())
-            if (byteBufferList.size == 3) {
+            // GPX R59 — by NAL type, so the sets end where the next one starts
+            val byteBufferList = extractParameterSets(buffer.duplicate(), size, intArrayOf(32, 33, 34)) { (it.toInt() shr 1) and 0x3F }
+            if (byteBufferList != null) {
               Log.i(TAG, "manual vps/sps/pps extraction success")
               val oldSps = byteBufferList[1]
               val oldPps = byteBufferList[2]
@@ -262,33 +264,34 @@ class Mpeg2TsMuxerRecordController : AsyncBaseRecordController() {
   }
 
   /**
-   * GPX R59 — the SPS and the PPS of a keyframe buffer, each with its 4-byte start code and ending
-   * at the next start code. VideoEncoderHelper.decodeSpsPpsFromBuffer ends the PPS at the end of
-   * the buffer, which swallows the picture that follows it, and returns an android.util.Pair, which
-   * a plain JVM test cannot read.
+   * GPX R59 — the parameter sets of a keyframe buffer, picked by NAL unit type. Each one keeps its
+   * start code and ends at the next start code. [typeOf] reads the NAL unit type from the first
+   * header byte. VideoEncoderHelper's two extractors end the last set at the end of the buffer, which
+   * swallows the picture that follows it (H.264: the PPS holds the IDR slice; H.265: the SPS holds the
+   * PPS and the PPS holds the IDR slice), and they return types a plain JVM test cannot read.
+   * Null when one of [types] is missing.
    */
-  private fun extractH264SpsPps(buffer: ByteBuffer, size: Int): Pair<ByteBuffer, ByteBuffer>? {
+  private fun extractParameterSets(buffer: ByteBuffer, size: Int, types: IntArray, typeOf: (Byte) -> Int): List<ByteBuffer>? {
     val csd = ByteArray(minOf(size, buffer.remaining()))
     buffer.get(csd)
-    val starts = mutableListOf<Int>()
+    // [start of the start code, first byte after it] of every NAL unit
+    val nals = mutableListOf<IntArray>()
     var i = 0
-    while (i < csd.size - 4) {
-      if (csd[i] == 0.toByte() && csd[i + 1] == 0.toByte() && csd[i + 2] == 0.toByte() && csd[i + 3] == 1.toByte()) {
-        starts.add(i)
-        i += 4
+    while (i < csd.size - 3) {
+      if (csd[i] == 0.toByte() && csd[i + 1] == 0.toByte() && csd[i + 2] == 1.toByte()) {
+        val startCode = if (i > 0 && csd[i - 1] == 0.toByte()) i - 1 else i
+        nals.add(intArrayOf(startCode, i + 3))
+        i += 3
       } else {
         i++
       }
     }
-    fun nal(type: Int): ByteBuffer? {
-      val index = starts.indexOfFirst { (csd[it + 4].toInt() and 0x1F) == type }
+    return types.map { type ->
+      val index = nals.indexOfFirst { it[1] < csd.size && typeOf(csd[it[1]]) == type }
       if (index < 0) return null
-      val end = if (index + 1 < starts.size) starts[index + 1] else csd.size
-      return ByteBuffer.wrap(csd.copyOfRange(starts[index], end))
+      val end = if (index + 1 < nals.size) nals[index + 1][0] else csd.size
+      ByteBuffer.wrap(csd.copyOfRange(nals[index][0], end))
     }
-    val sps = nal(7) ?: return null
-    val pps = nal(8) ?: return null
-    return sps to pps
   }
 
   override fun setVideoFormat(videoFormat: MediaFormat) {

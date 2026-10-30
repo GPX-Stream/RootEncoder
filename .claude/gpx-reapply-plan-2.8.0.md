@@ -989,25 +989,30 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
 - [x] R59 — each MPEG-TS recording file starts on a keyframe preceded by the codec headers
       (`gpxstream-app` issue #921; fork edit approved by Andy 2026-10-29)
       **What a person sees.** A file that begins in the middle of a group of pictures (every file
-      after the first, and a first file started late) opened with about one second no player could
-      decode: `PPS id out of range`, `SPS 0 does not exist`, a first good frame at about 1 s.
+      after the first, and a first file started late) opened with undecodable delta frames, and its
+      first decodable frame came one keyframe interval later: `PPS id out of range`, `SPS 0 does not
+      exist`, a first good frame at about 1 s.
       **The cause.** In `Mpeg2TsMuxerRecordController.onWriteFrame`, a video frame in status `STARTED`
       went only to `getVideoInfo`, which reads the codec headers from a keyframe and moves the status
-      to `RECORDING`. The keyframe itself was never written, so the file began at the next keyframe
-      (one interval later), with delta frames in between if `setVideoFormat` had already moved the
-      status on. Upstream has the same flow.
-      **The fix.** The keyframe that supplied the headers is written. A file also drops video frames
-      until its first keyframe, whichever path moved the status to `RECORDING`; the packetizer puts the
-      headers in front of that keyframe. `getVideoInfo` takes the keyframe verdict and size from the
-      frame info, and the H.264 SPS/PPS split is done in the controller (`extractH264SpsPps`): the
-      helper it replaces ends the PPS at the end of the buffer and returns an `android.util.Pair`,
-      which a plain JVM test cannot read. H.265 still uses `VideoEncoderHelper`.
+      to `RECORDING`. The keyframe itself was never written; the frames after it were, so the file held
+      delta frames with nothing to decode from until the next keyframe. Upstream has the same flow.
+      **The fix.** The keyframe that supplied the headers is written. A file also drops video frames,
+      and audio, until its first keyframe, whichever path moved the status to `RECORDING` (the
+      `setVideoFormat` path can do it before any keyframe); the packetizer puts the headers in front of
+      that keyframe. `getVideoInfo` takes the keyframe verdict and size from the frame info. The
+      parameter sets are picked by NAL type in the controller (`extractParameterSets`) for H.264 (SPS,
+      PPS) and H.265 (VPS, SPS, PPS): `VideoEncoderHelper`'s extractors end the last set at the end of
+      the buffer, so the H.264 PPS held the IDR slice, and in H.265 the stored SPS held the SPS and the
+      PPS and the stored PPS held the IDR slice, which put an extra SPS and PPS ahead of the VPS in every
+      keyframe. They also return types a plain JVM test cannot read. `setVideoFormat` still uses the
+      helper on the encoder's csd-0.
       **MP4.** `AndroidMuxerRecordController` already waits for a keyframe in `STARTED` and writes it,
       so it needs no change.
       **Tests.** `Mpeg2TsMuxerRecordControllerTest` writes a real file and reads back the video NAL
-      order: SPS, PPS, IDR, then the delta frame. Red before the change (`[1]`, the file held only the
-      delta frame). Not covered off-device: the `setVideoFormat` path (`MediaFormat` is a stub).
-      Markers: `git grep -n "GPX R59"`.
+      order (H.264: SPS, PPS, IDR, delta; H.265: VPS, SPS, PPS, IDR at each keyframe). Red before the
+      change, on the old flow with the old extractor: `[1]` for H.264 (the file held only the delta
+      frame) and `[33, 34, 32, 33, 34, 19, ...]` for H.265. Not covered off-device: the `setVideoFormat`
+      path and the audio hold (`MediaFormat` is a stub). Markers: `git grep -n "GPX R59"`.
 
 ## Correction to R14's scope
 
