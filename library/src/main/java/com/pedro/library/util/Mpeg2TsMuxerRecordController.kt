@@ -1,6 +1,5 @@
 package com.pedro.library.util
 
-import android.media.MediaCodec
 import android.media.MediaFormat
 import android.util.Log
 import com.pedro.common.AudioCodec
@@ -56,6 +55,9 @@ class Mpeg2TsMuxerRecordController : AsyncBaseRecordController() {
   private var sampleRate = 0
   private var isStereo = true
   private var sendInfo = false
+  // GPX R59 — true from the start of a file until its first keyframe is written.
+  @Volatile
+  private var waitingForFirstKeyFrame = true
   // GPX R12 — the first write failure of a recording is reported once.
   @Volatile
   private var writeErrorNotified = false
@@ -99,6 +101,7 @@ class Mpeg2TsMuxerRecordController : AsyncBaseRecordController() {
       }
     }
     sendInfo = false
+    waitingForFirstKeyFrame = true
     outputStream?.let {
       val videoEnabled = tracks == RecordTracks.VIDEO || tracks == RecordTracks.ALL
       val audioEnabled = tracks == RecordTracks.AUDIO || tracks == RecordTracks.ALL
@@ -174,10 +177,22 @@ class Mpeg2TsMuxerRecordController : AsyncBaseRecordController() {
     when (frame.type) {
       MediaFrame.Type.VIDEO -> {
         if (tracks != RecordTracks.AUDIO) {
+          // GPX R59 — a file opens on a keyframe. Delta frames before the first keyframe cannot be
+          // decoded on their own, and the keyframe that supplied the codec headers is written
+          // instead of being consumed by getVideoInfo.
+          val isKey = frame.info.isKeyFrame || frame.info.toMediaCodecBufferInfo().isKeyframe() || isKeyFrame(frame.data)
           if (recordStatus == RecordController.Status.STARTED) {
-            getVideoInfo(frame.data, frame.info.toMediaCodecBufferInfo())
-          } else if (recordStatus == RecordController.Status.RECORDING) {
-            writeMpeg2TsPacket(frame)
+            getVideoInfo(frame.data, frame.info.size, isKey)
+          }
+          if (recordStatus == RecordController.Status.RECORDING) {
+            if (isKey) {
+              // the packetizer reads the flag from the frame info, so a keyframe found only by its NAL type is flagged
+              val keyFrame = if (frame.info.isKeyFrame) frame else frame.copy(info = frame.info.copy(isKeyFrame = true))
+              waitingForFirstKeyFrame = false
+              writeMpeg2TsPacket(keyFrame)
+            } else if (!waitingForFirstKeyFrame) {
+              writeMpeg2TsPacket(frame)
+            }
           }
         }
       }
@@ -198,13 +213,13 @@ class Mpeg2TsMuxerRecordController : AsyncBaseRecordController() {
     }
   }
 
-  private fun getVideoInfo(buffer: ByteBuffer, info: MediaCodec.BufferInfo) {
-    if (info.isKeyframe() || isKeyFrame(buffer)) {
+  // GPX R59 — the keyframe verdict and size come from the caller, which also writes the keyframe.
+  private fun getVideoInfo(buffer: ByteBuffer, size: Int, isKey: Boolean) {
+    if (isKey) {
       if (!sendInfo) {
         when (videoPacket) {
           is H264Packet -> {
-            val buffers =
-              VideoEncoderHelper.decodeSpsPpsFromBuffer(buffer.duplicate(), info.size)
+            val buffers = extractH264SpsPps(buffer.duplicate(), size)
             if (buffers != null) {
               Log.i(TAG, "manual sps/pps extraction success")
               val oldSps = buffers.first
@@ -244,6 +259,36 @@ class Mpeg2TsMuxerRecordController : AsyncBaseRecordController() {
       myRequestKeyFrame?.onRequestKeyFrame()
       myRequestKeyFrame = null
     }
+  }
+
+  /**
+   * GPX R59 — the SPS and the PPS of a keyframe buffer, each with its 4-byte start code and ending
+   * at the next start code. VideoEncoderHelper.decodeSpsPpsFromBuffer ends the PPS at the end of
+   * the buffer, which swallows the picture that follows it, and returns an android.util.Pair, which
+   * a plain JVM test cannot read.
+   */
+  private fun extractH264SpsPps(buffer: ByteBuffer, size: Int): Pair<ByteBuffer, ByteBuffer>? {
+    val csd = ByteArray(minOf(size, buffer.remaining()))
+    buffer.get(csd)
+    val starts = mutableListOf<Int>()
+    var i = 0
+    while (i < csd.size - 4) {
+      if (csd[i] == 0.toByte() && csd[i + 1] == 0.toByte() && csd[i + 2] == 0.toByte() && csd[i + 3] == 1.toByte()) {
+        starts.add(i)
+        i += 4
+      } else {
+        i++
+      }
+    }
+    fun nal(type: Int): ByteBuffer? {
+      val index = starts.indexOfFirst { (csd[it + 4].toInt() and 0x1F) == type }
+      if (index < 0) return null
+      val end = if (index + 1 < starts.size) starts[index + 1] else csd.size
+      return ByteBuffer.wrap(csd.copyOfRange(starts[index], end))
+    }
+    val sps = nal(7) ?: return null
+    val pps = nal(8) ?: return null
+    return sps to pps
   }
 
   override fun setVideoFormat(videoFormat: MediaFormat) {

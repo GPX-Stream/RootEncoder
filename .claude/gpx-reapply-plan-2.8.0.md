@@ -986,6 +986,29 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       blackbox holds no `Receive loop failed` entry, and that a fault with the stream still running
       is still reported. Markers: `git grep -n "GPX R58"`.
 
+- [x] R59 — each MPEG-TS recording file starts on a keyframe preceded by the codec headers
+      (`gpxstream-app` issue #921; fork edit approved by Andy 2026-10-29)
+      **What a person sees.** A file that begins in the middle of a group of pictures (every file
+      after the first, and a first file started late) opened with about one second no player could
+      decode: `PPS id out of range`, `SPS 0 does not exist`, a first good frame at about 1 s.
+      **The cause.** In `Mpeg2TsMuxerRecordController.onWriteFrame`, a video frame in status `STARTED`
+      went only to `getVideoInfo`, which reads the codec headers from a keyframe and moves the status
+      to `RECORDING`. The keyframe itself was never written, so the file began at the next keyframe
+      (one interval later), with delta frames in between if `setVideoFormat` had already moved the
+      status on. Upstream has the same flow.
+      **The fix.** The keyframe that supplied the headers is written. A file also drops video frames
+      until its first keyframe, whichever path moved the status to `RECORDING`; the packetizer puts the
+      headers in front of that keyframe. `getVideoInfo` takes the keyframe verdict and size from the
+      frame info, and the H.264 SPS/PPS split is done in the controller (`extractH264SpsPps`): the
+      helper it replaces ends the PPS at the end of the buffer and returns an `android.util.Pair`,
+      which a plain JVM test cannot read. H.265 still uses `VideoEncoderHelper`.
+      **MP4.** `AndroidMuxerRecordController` already waits for a keyframe in `STARTED` and writes it,
+      so it needs no change.
+      **Tests.** `Mpeg2TsMuxerRecordControllerTest` writes a real file and reads back the video NAL
+      order: SPS, PPS, IDR, then the delta frame. Red before the change (`[1]`, the file held only the
+      delta frame). Not covered off-device: the `setVideoFormat` path (`MediaFormat` is a stub).
+      Markers: `git grep -n "GPX R59"`.
+
 ## Correction to R14's scope
 
 The original item list described R14 from the old branch's commit titles, which overstated
