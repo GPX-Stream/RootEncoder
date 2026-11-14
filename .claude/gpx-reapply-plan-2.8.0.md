@@ -16,7 +16,7 @@ later items depend on earlier ones.
 - [x] R4 — StreamBase keyframe on `startStream()` and on `startRecord()` — `cd89bb86b`
 - [x] R5 — `takePhoto(width, height, callback)` overload (GlInterface, GlStreamInterface, OpenGlView) — `614488cd2`
 - [x] R6 — FlvMuxerRecordController AVCC SPS/PPS fallback — `f594eef93`
-- [x] R7 — SRT inbound-silence dead-link detection + `getInboundSilenceMs` — `a7bbe6a63`
+- [x] R7 — SRT inbound-silence reading `getInboundSilenceMs` (the 5.5 s dead-link check it began with was removed by R60) — `a7bbe6a63`
 - [x] R8 — SRT handshake retransmit with backoff — `a7bbe6a63`
 - [x] R9 — Encoder continuous timestamps across stop/start — `c47012f52` (BaseEncoder, VideoEncoder), `68b6a0a6c` (AudioEncoder)
 - [x] R10 — Log-noise reduction (ImageStreamObject, SurfaceManager, BaseEncoder cold start) — `5b3d78c6b`; the BaseEncoder part is the `codecStarted` flush gate in `c47012f52`
@@ -1013,6 +1013,29 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       change, on the old flow with the old extractor: `[1]` for H.264 (the file held only the delta
       frame) and `[33, 34, 32, 33, 34, 19, ...]` for H.265. Not covered off-device: the `setVideoFormat`
       path and the audio hold (`MediaFormat` is a stub). Markers: `git grep -n "GPX R59"`.
+
+- [x] R60 — SRT stops judging inbound silence; the reading stays and a connect clears it
+      (`gpxstream-app` issue #915; fork edit approved by Andy 2026-11-14, rulings 5 and 10)
+      **Why.** The fork failed an SRT connection after 5.5 s without an inbound packet (R7) while the
+      app's own watchdog judged the same silence by its own limit. Two layers decided one thing, and the
+      fork's number could not follow the dashboard. The app now judges alone, so the fork's check goes.
+      A removal, not a setter.
+      **The change.** `SrtClient`: the call to `startInboundSilenceWatchdog()`, the function, its
+      constants `inboundSilenceTimeoutMs` and `inboundSilenceTickMs` and the `inboundSilenceJob` field
+      are gone. Kept: `lastInboundMs`, its updates, `getInboundSilenceMs()` and R49's clock. R7 now only
+      exposes the reading, as R42 does for WHIP. New: `connect` zeroes `lastInboundMs` before it sets
+      `isStreaming`, so the reading is -1 from connect start until that connection's handshake
+      completes, never the previous connection's silence (WHIP's `disconnect` resets its tracker). During
+      `reConnect`'s delay the old reading still climbs; the app never calls `reConnect` today.
+      **What this removes.** A SRT connection whose server goes silent is no longer failed by the fork.
+      Only the consumer's judgement of `getInboundSilenceMs()` ends it, plus the off-by-default
+      `setServerSilenceTimeout` (stays off, audit open call 3). Do not ship this without the consumer's
+      #915 change, or a silent link is not detected at all.
+      **Tests.** `SrtInboundSilenceTest`, with a loopback UDP server standing in for the peer: after a
+      completed handshake and 6 s of silence the client reports no failure and the reading is at least
+      6 s; after a reconnect to an endpoint that never answers the reading is -1. Both fail on the code
+      before the change (the old check reported "No response from server" at 5.5 s; the old reading
+      stayed at the previous connection's 30 s). Markers: `git grep -n "GPX R60"`.
 
 ## Correction to R14's scope
 

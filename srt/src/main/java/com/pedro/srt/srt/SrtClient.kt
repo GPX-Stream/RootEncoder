@@ -85,27 +85,20 @@ class SrtClient(private val connectChecker: ConnectChecker) {
 
   private var checkServerAlive = false
 
-  // GPX R49 — the clock for R7's silence timer and R8's handshake deadline: elapsed realtime, which
-  // only moves forward. They used System.currentTimeMillis, a wall clock the system can step (a
-  // network time sync after the cell radio registers): a forward step over the 5.5 s timeout faked
-  // a dead link, a backward step hid one. A var only so tests can drive time.
+  // GPX R49 — the clock for the inbound-silence reading and R8's handshake deadline: elapsed realtime,
+  // which only moves forward. They used System.currentTimeMillis, a wall clock the system can step (a
+  // network time sync after the cell radio registers): a forward step faked a long silence in the
+  // reading the consumer judges, a backward step hid a real one. A var only so tests can drive time.
   internal var nowMs: () -> Long = { TimeUtils.getCurrentTimeMillis() }
 
-  // GPX R7 — time (on [nowMs]) the last packet was read. A silent UDP blackhole keeps sendto()
-  // succeeding, so the outbound byte counter keeps climbing while the server stops responding and
-  // nothing reports a failure. This reads SRT's own control traffic (ACK and KeepAlive arrive
-  // sub-second at any latency) rather than ICMP, so a firewall that drops ICMP does not blind it.
+  // GPX R7 — time (on [nowMs]) the last packet was read, 0 from connect start until the handshake completes. A silent UDP
+  // blackhole keeps sendto() succeeding, so the outbound byte counter keeps climbing while the
+  // server stops responding and nothing reports a failure. This reads SRT's own control traffic
+  // (ACK and KeepAlive arrive sub-second at any latency) rather than ICMP, so a firewall that
+  // drops ICMP does not blind it. GPX R60 — only the reading: this client no longer judges it, the
+  // consumer reads [getInboundSilenceMs] and decides.
   @Volatile
   private var lastInboundMs = 0L
-  private var inboundSilenceJob: Job? = null
-
-  // GPX R7 — inbound-silence dead-link timeout. Fixed rather than scaled with latency: a server that
-  // drops the publisher at a fixed interval cannot be ridden through by waiting longer, and scaling
-  // with latency only delays detection. 5,500 ms sits above an observed 5 s server-side drop, which
-  // still rides through shorter blips. Checked on its own 1 s tick rather than inside the
-  // multi-second readBuffer loop, so detection does not wait for the next socket read to wake.
-  private val inboundSilenceTimeoutMs = 5_500L
-  private val inboundSilenceTickMs = 1_000L
 
   private var serverSilenceTimeoutMs = 0L
   @Volatile
@@ -237,6 +230,9 @@ class SrtClient(private val connectChecker: ConnectChecker) {
   fun connect(url: String?, isRetry: Boolean = false) {
     if (!isRetry) doingRetry = true
     if (!isStreaming || isRetry) {
+      // GPX R60 — a new connection starts with no reading, so a reused client reports -1 from
+      // getInboundSilenceMs() until its own handshake completes, never the last connection's silence.
+      lastInboundMs = 0L
       isStreaming = true
 
       job = scope.launch {
@@ -345,7 +341,6 @@ class SrtClient(private val connectChecker: ConnectChecker) {
             srtSender.socket = socket
             srtSender.start()
             lastInboundMs = nowMs()
-            startInboundSilenceWatchdog()
             handleServerPackets()
           }
         }.exceptionOrNull()
@@ -406,32 +401,6 @@ class SrtClient(private val connectChecker: ConnectChecker) {
       Log.i(TAG, "skip stale $phase handshake: ${handshake.handshakeType.name}")
     }
     return null
-  }
-
-  /**
-   * GPX R7 — report the link dead once no packet has been read for [inboundSilenceTimeoutMs].
-   *
-   * Runs on its own [inboundSilenceTickMs] tick rather than inside the readBuffer loop, whose block
-   * can last multiple seconds, so the report does not wait for the next socket read to wake. This
-   * replaces the ICMP probe in [checkServerAlive] for the blackhole case, where sendto() keeps
-   * succeeding and the outbound counter keeps climbing while nothing comes back.
-   */
-  private fun startInboundSilenceWatchdog() {
-    inboundSilenceJob?.cancel()
-    inboundSilenceJob = scope.launch {
-      while (isActive && isStreaming) {
-        delay(inboundSilenceTickMs)
-        if (lastInboundMs == 0L) continue
-        val silentMs = nowMs() - lastInboundMs
-        if (silentMs > inboundSilenceTimeoutMs) {
-          onMainThread {
-            connectChecker.onConnectionFailed("No response from server (inbound silence ${silentMs}ms > ${inboundSilenceTimeoutMs}ms)")
-          }
-          scope.cancel()
-          break
-        }
-      }
-    }
   }
 
   fun disconnect() {
@@ -647,7 +616,10 @@ class SrtClient(private val connectChecker: ConnectChecker) {
 
   /**
    * GPX R7 — milliseconds since the last inbound packet was read, or -1 when not streaming or
-   * not yet established. On a responding link this stays near zero, because SRT sends ACK and
+   * not yet established (GPX R60: a new connect clears the previous reading, so -1 holds from
+   * connect start until the handshake completes). This client only exposes the reading, as
+   * the WHIP client does (R42); it fails no connection on silence, the consumer judges it.
+   * On a responding link this stays near zero, because SRT sends ACK and
    * KeepAlive control packets sub-second at any latency, and it grows once the server stops
    * responding. An outbound bytes-sent counter cannot show this, since sendto() keeps succeeding
    * into a blackhole.
