@@ -1088,7 +1088,12 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       stopped (the socket closes are idempotent). The early guard stays, so a running sender still
       stops before the socket closes (R61's order). The retry path (`disconnect(false)`) shares the
       same tail, so the same line covers a retry's teardown.
-      **Not changed.** `RtmpClient`, `SrtClient` and the other clients; the connect job itself.
+      **Not changed.** The other clients and the connect job itself. The same connect-then-start
+      window exists in `RtmpClient` (`onConnectionSuccess`, then `rtmpSender.start()`, the sender
+      guard in its `disconnect`, the connect job joined later) and in `SrtClient` (same shape), and
+      the app uses both. Separately, `WhipClient.disconnect()` that overlaps a new `connect()`
+      (between `isStreaming = false` and the join of `job`) leaves the old connect job running with
+      nothing holding it. These are tracked as a follow-up issue in `gpxstream-app`.
       **Tests.** `WhipConnectStopRaceTest` drives the real `WhipClient` against a fake ingest (a
       local HTTP server for the offer, a UDP peer that answers the STUN checks, the fork's own
       `DtlsServerConnection` as the other end) and places the stop with the `ConnectChecker`: the

@@ -45,7 +45,7 @@ import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * GPX R62 — whether a stop that lands between `onConnectionSuccess` and `whipSender.start()` leaves a
- * sender running (gpxstream-app issue #1097). This drives the real [WhipClient] against a fake ingest
+ * sender running. This drives the real [WhipClient] against a fake ingest
  * built from the fork's own classes: a local HTTP server for the WHIP offer, a UDP peer that answers
  * the STUN checks, and the fork's [DtlsServerConnection] as the other end of the DTLS handshake.
  *
@@ -88,6 +88,7 @@ class WhipConnectStopRaceTest {
     private val peerFingerprint = MessageDigest.getInstance("SHA-256").digest(cert.certificate.encoded)
       .joinToString(":") { "%02X".format(it) }
     @Volatile private var closed = false
+    @Volatile private var dtlsServer: DtlsServerConnection? = null
     private val localIp = localIp
 
     val url: String get() = "http://127.0.0.1:${http.address.port}/whip"
@@ -149,7 +150,8 @@ class WhipConnectStopRaceTest {
           }
         }
       }.apply { isDaemon = true }.start()
-      DtlsServerConnection(cert, clientFingerprint).start(transport, object : DtlsConnection.Callback {
+      dtlsServer = DtlsServerConnection(cert, clientFingerprint)
+      dtlsServer!!.start(transport, object : DtlsConnection.Callback {
         override fun onHandshakeComplete(keys: SrtpKeys) {}
         override fun onHandshakeFailed(reason: String?) {}
       })
@@ -157,6 +159,7 @@ class WhipConnectStopRaceTest {
 
     fun close() {
       closed = true
+      runCatching { dtlsServer?.close() }
       runCatching { udp.close() }
       runCatching { http.stop(0) }
     }
@@ -285,9 +288,11 @@ class WhipConnectStopRaceTest {
 
       // A second stop is harmless.
       val before = checker.disconnects.get()
+      val scopeBefore = field(client, "scope")
       client.disconnect()
       waitUntil("second disconnect reached onDisconnect") { checker.disconnects.get() > before }
-      waitUntil("second stop finished") { connectJob(client) == null }
+      // the last thing disconnect() does is replace its scope, so a new one means the stop is over
+      waitUntil("second stop finished") { field(client, "scope") !== scopeBefore }
       assertFalse("sender running after the second disconnect", running(client))
       assertEquals(emptyList<String>(), checker.failures.toList())
     } finally {
