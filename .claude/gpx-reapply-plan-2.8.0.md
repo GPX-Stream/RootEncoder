@@ -1093,8 +1093,8 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       guard in its `disconnect`, the connect job joined later) and in `SrtClient` (same shape), and
       the app uses both. Separately, `WhipClient.disconnect()` that overlaps a new `connect()`
       (between `isStreaming = false` and the join of `job`) leaves the old connect job running with
-      nothing holding it. These are tracked in `gpxstream-app` issue #1102 and handled in R63, R64
-      and R65.
+      nothing holding it. These are tracked in `gpxstream-app` issue #1102: fixed in R63 and R64;
+      R65 is a design.
       **Tests.** `WhipConnectStopRaceTest` drives the real `WhipClient` against a fake ingest (a
       local HTTP server for the offer, a UDP peer that answers the STUN checks, the fork's own
       `DtlsServerConnection` as the other end) and places the stop with the `ConnectChecker`: the
@@ -1110,8 +1110,9 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
 
 - [x] R63 — a stop between an SRT connect and the sender start leaves no sender running
       (`gpxstream-app` issue #1102; fork fix approved by Andy 2026-11-23)
-      **What a person sees.** Nothing on screen, and it is not reachable from the bench: the window is
-      microseconds wide. After such a stop the app believes the stream is stopped while a sender runs
+      **What a person sees.** Nothing on screen, and the bench cannot aim at it. The window is as wide
+      as the Main-thread hop of `onConnectionSuccess` on the device (a real thread switch there; the
+      tests' unconfined Main cannot model that ordering, so they hold the callback instead). After such a stop the app believes the stream is stopped while a sender runs
       on a socket the stop closed, and a second stop does not stop it. The next start cancels it.
       **The cause.** The same as R62, in `SrtClient`. `disconnect` reads `isStreaming` to decide whether
       to stop the sender, closes the socket, sets `isStreaming` false (and reports `onDisconnect`),
@@ -1138,7 +1139,8 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
 
 - [x] R64 — a stop between an RTMP connect and the sender start leaves no sender running
       (`gpxstream-app` issue #1102; fork fix approved by Andy 2026-11-23)
-      **What a person sees.** Nothing on screen; not reachable from the bench. Same outcome as R63.
+      **What a person sees.** Nothing on screen; the bench cannot aim at it (the window is as wide as
+      the Main-thread hop of `onConnectionSuccess` on the device). Same outcome as R63.
       **The cause.** The same as R62, in `RtmpClient`. The sender starts inside `handleMessages` on
       `onStatus NetStream.Publish.Start`: `onConnectionSuccess`, then `rtmpSender.socket = socket` and
       `rtmpSender.start()`, with no suspension point between them. `disconnect` closes the socket and
@@ -1146,6 +1148,16 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       **The fix.** `disconnect` stops the sender once more after the connect job has been cancelled and
       joined: `rtmpSender.stop(false, unlockNeeded = { socket?.close() })`, the same unlock the early
       guard passes. Not `stop(clear)`, for the reason given in R63. The early guard stays.
+      **The unlock always runs.** `BaseSender.stop()` calls `unlockNeeded` whenever
+      `job?.cancelAndJoin()` does not return a value, and that includes a `job` that is already null.
+      By the tail the guard has stopped and nulled the sender's job, so the tail stop always runs
+      `socket?.close()` once more. For the direct TCP and TLS socket that is a second `close()` on a
+      closed Java socket, which does nothing. For the tunnelled socket (`rtmpt`, `rtmpts`),
+      `TcpTunneledSocket.close()` starts a thread that sends one more `close/<connectionId>` HTTP
+      request; `connectionId` is reset to "" once the first close thread ends, so the extra request
+      is either a duplicate close of the same id or a `close/` that the server rejects, and a failure
+      is only logged (`Close request failed`). Harmless to the stream, and one stray HTTP request on a
+      tunnelled stop. The app does not use the tunnelled schemes.
       **Not changed.** The connect job itself, and the overlap of a new `connect()` with a stop (R65).
       **Tests.** `RtmpConnectStopRaceTest` drives the real `RtmpClient` against a fake ingest on a
       loopback TCP port: it does the RTMP handshake, and answers `connect` and `createStream` with
@@ -1161,7 +1173,11 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       (`isStreaming` true) with nothing connecting and nothing sending, and every later `connect()` is
       ignored until a `disconnect()`. The consumer is told nothing. The natural trigger is a consumer
       that restarts from its `onDisconnect` callback, because `disconnect(true)` raises that callback
-      inside the window; whether `gpxstream-app` does so is not checked here.
+      inside the window.
+      **Why it matters to the app.** The app's reducer starts the next connect straight after
+      `Disconnected` when a stream is wanted again (`resolveStopping` in
+      `core/stream/StreamLadderRules.kt`: `if (cleared.wantsStream) beginOrPrepare(...)`), so a stop
+      followed at once by a start (a protocol swap, a restart after a stop) can land in this overlap.
       **The sequence (WhipClient; SrtClient and RtmpClient have the same shape, read, not run).**
       1. `disconnect(true)` runs: sender guard, close sockets, `isStreaming = false`, `onDisconnect`.
       2. A `connect()` arrives now (another thread, or the callback itself). `!isStreaming` lets it in:
@@ -1173,9 +1189,22 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
          returns while a connect job still runs.
       5. `isStreaming` is true, `job` is null, nothing was reported, and the next `connect()` is
          refused by the same guard.
+      **How long the window is.** It runs from `isStreaming = false` to the line that replaces the
+      scope (`scope = CoroutineScope(...)`), the last line of `disconnect`, not only to the join. A
+      `connect()` after `job = null` and before that line launches on a scope that is about to be
+      cancelled: it dies silently and leaves `isStreaming` true, the same end state. A cancelled
+      second job also leaves the media socket it opened open (SRT: `socket = SrtSocket(...)` in the
+      connect job; RTMP: `establishConnection`; WHIP: `iceSocket`) until the next `disconnect()`
+      closes the field.
+      **Same shape in the other clients (lines at this head).** `SrtClient`: the sender guard in
+      `disconnect(clear)` near 413, `job = scope.launch` near 238, `isStreaming = false` near 423,
+      the join near 436. `RtmpClient`: guard near 580, `job = scope.launch` near 247,
+      `isStreaming = false` near 590, join near 601. Each has the same guard on `connect`
+      (`!isStreaming || isRetry`) and the same field overwrite.
       **What is real and what is not.** Steps 2 to 5 and the stuck `isStreaming` are driven by
       `WhipConnectStopRaceTest` ("a connect during a stop ..."), which asserts today's behaviour (marked
-      DEFECT) and flips when this is fixed. The claim that the first job can start a sender after the
+      DEFECT) and fails once this is fixed (under fix A by timing out on "stop finished", because the
+      stop then waits for the first job, which the test holds); rewrite it with the fix. The claim that the first job can start a sender after the
       stop is narrower than it reads: `scope.cancel()` cancels it, and a job returning from
       `onConnectionSuccess` after that is cancelled before `whipSender.start()`. Only a job that is on
       the CPU between the stop's second sender stop and its scope cancel could start one, a window
@@ -1184,7 +1213,9 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       - A. Join every connect job, not the one in the field: cancel and join the scope's own job
         (`scope.coroutineContext.job.cancelAndJoin()`) in place of `job?.cancelAndJoin()`. One line, no
         new state. It removes the unawaited job and the narrow sender start. It does not touch the
-        stuck `isStreaming`: the second job is still cancelled silently.
+        stuck `isStreaming`: the second job is still cancelled silently. The join must wait for every
+        child job and cap the wait (`withTimeoutOrNull`, as `BaseSender.stop` does), so a connect job
+        stuck in a blocking call cannot hang the stop.
       - B. A generation counter. `disconnect` increments it first. A connect job reads it when it
         starts and checks it before each write to shared state (`isStreaming`, `iceSocket`,
         `dtlsConnection`, `whipSender.start()`), and a job of an older generation ends quietly.
@@ -1213,7 +1244,11 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       consumer sees: a start that arrives during a stop runs after it, instead of being swallowed.
       Not C: a lock buys little over B and brings the main-thread deadlock risk. Apply the same change
       to `SrtClient` and `RtmpClient`, which share the shape, with the same kind of tests. Whether D
-      should defer or refuse is Andy's call.
+      should defer or refuse is Andy's call. Two more questions for Andy: whether the three clients
+      should also cancel the connect job at the very top of `disconnect(clear)`, keeping the join and
+      the tail stop (a sender then never starts after a stop, and the interval in which a sender runs
+      on the closed socket, from `start()` to the tail stop, goes away; a further fork edit), and
+      whether R65 should cover the retry path (`reConnect`, which the app never calls).
       **Test.** The documenting test above; no fix in this entry.
       Markers: `git grep -n "GPX R65"` (the test only).
 

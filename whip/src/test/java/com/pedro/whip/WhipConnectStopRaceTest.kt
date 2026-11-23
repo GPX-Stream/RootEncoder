@@ -343,14 +343,18 @@ class WhipConnectStopRaceTest {
 
   /**
    * GPX R65 — DOCUMENTS A DEFECT; the fix is not in this change (design: fork plan, R65). A `connect()`
-   * that lands inside a stop, after `disconnect(true)` has set `isStreaming` false and before it joins
-   * the connect job, is taken as a fresh connect: it launches a second connect job and overwrites the
-   * `job` field. The stop then (1) cancels and joins only the second job, so it finishes while the
-   * first job is still running, and (2) leaves `isStreaming` true with no connect job and nothing
-   * reported, so the next `connect()` is ignored until a `disconnect()`.
+   * that lands inside a stop, after `disconnect(true)` has set `isStreaming` false and before it
+   * replaces its scope (the window runs to that last line, not only to the join), is taken as a fresh
+   * connect: it launches a second connect job and overwrites the `job` field. The stop then (1)
+   * cancels and joins only the second job, so it finishes while the first job is still running, and
+   * (2) leaves `isStreaming` true with no connect job and nothing reported, so the next `connect()`
+   * is ignored until a `disconnect()`. A `connect()` after the join, before the scope is replaced,
+   * launches on a scope that is about to be cancelled and dies the same way. The cancelled second
+   * job's media socket is not closed until the next `disconnect()`.
    *
-   * The assertions say what happens today. When the defect is fixed they flip: the first job is
-   * finished when the stop returns, and `isStreaming` matches what is running.
+   * The assertions say what happens today, and this test FAILS once the defect is fixed (under fix A,
+   * the join of every job, by timing out on "stop finished", because the stop then waits for the first
+   * job, which this test still holds in `onConnectionSuccess`). Rewrite it together with the fix.
    *
    * Not shown here: the first job starting a sender after the stop. The stop's last step cancels the
    * scope, and a job that returns from `onConnectionSuccess` after that is cancelled before
@@ -369,6 +373,7 @@ class WhipConnectStopRaceTest {
       await("onConnectionSuccess entered", checker.successEntered)
       val firstJob = connectJob(client)!!
 
+      val scopeAtStop = field(client, "scope")
       client.disconnect()
       await("onDisconnect entered", checker.disconnectEntered)
       assertFalse("the stop already set isStreaming false", client.isStreaming)
@@ -384,7 +389,8 @@ class WhipConnectStopRaceTest {
       checker.releaseDisconnect.countDown()
       waitUntil("stop cancelled the second job") { secondJob.isCancelled }
       checker.releaseSecondStarted.countDown()
-      waitUntil("stop finished") { connectJob(client) == null }
+      // the stop's last step replaces its scope, after the job field is cleared and the tail stop ran
+      waitUntil("stop finished") { field(client, "scope") !== scopeAtStop }
 
       assertFalse("DEFECT: the stop finished while the first connect job was still running", firstJob.isCompleted)
       assertTrue("DEFECT: isStreaming is true after the stop, with no connect job", client.isStreaming)

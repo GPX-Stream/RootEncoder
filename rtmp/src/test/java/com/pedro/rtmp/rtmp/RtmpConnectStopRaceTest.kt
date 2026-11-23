@@ -205,6 +205,7 @@ class RtmpConnectStopRaceTest {
 
       // The stop begins: it reads isStreaming (true, so it would stop a running sender, but none is
       // running yet), closes the socket, sets isStreaming false and stops at onDisconnect.
+      val scopeAtStop = field(client, "scope")
       client.disconnect()
       await("onDisconnect entered", checker.disconnectEntered)
       assertFalse("the stop already set isStreaming false", client.isStreaming)
@@ -215,10 +216,12 @@ class RtmpConnectStopRaceTest {
       // the sender.
       checker.releaseSuccess.countDown()
       waitUntil("connect job finished") { connectJob(client)!!.isCompleted }
+      assertTrue("the race was driven: the connect job started the sender after the stop's guard", running(client))
 
-      // Let the stop finish.
+      // Let the stop finish. The stop's last step replaces its scope, after the tail sender stop, so
+      // a new scope means the stop is over. The job field is cleared before that tail stop.
       checker.releaseDisconnect.countDown()
-      waitUntil("stop finished") { connectJob(client) == null }
+      waitUntil("stop finished") { field(client, "scope") !== scopeAtStop }
 
       // The connect job did run on to start(): the stop must stop that sender too.
       assertFalse("sender left running after the stop finished", running(client))
