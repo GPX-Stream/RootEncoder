@@ -6,6 +6,7 @@ import com.pedro.common.AudioCodec
 import com.pedro.common.ConnectChecker
 import com.pedro.common.UrlParser
 import com.pedro.common.VideoCodec
+import com.pedro.common.base.ConnectGate
 import com.pedro.common.frame.MediaFrame
 import com.pedro.common.onMainThread
 import com.pedro.common.socket.base.SocketType
@@ -36,12 +37,16 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.atomic.AtomicLong
 import java.net.Inet6Address
@@ -61,6 +66,13 @@ class WhipClient(private val connectChecker: ConnectChecker) {
     private var job: Job? = null
     private var jobRetry: Job? = null
     private var mutex = Mutex(locked = true)
+
+    // GPX R65 — the stop count, the generation and the deferred connect (fork plan, R65). Never held
+    // across a suspension or a callback.
+    private val gate = ConnectGate()
+    // GPX R65 — one teardown at a time. Taken only by coroutines on IO, never by a caller of
+    // connect(), so nothing on the main thread waits for it.
+    private val teardownLock = Mutex()
 
     @Volatile
     var isStreaming = false
@@ -189,13 +201,37 @@ class WhipClient(private val connectChecker: ConnectChecker) {
     }
 
     fun connect(url: String?, isRetry: Boolean) {
+        gate.locked {
+            // GPX R65 — a connect that arrives while a stop runs is remembered and started after the
+            // teardown (the latest url wins). A retry's connect is dropped: the stop wins.
+            if (gate.stopping()) {
+                if (!isRetry) gate.defer(url)
+                return
+            }
+            connectLocked(url, isRetry)
+        }
+    }
+
+    /** GPX R65 — closes a socket even when the calling job is already cancelled. */
+    private suspend fun closeQuietly(socket: UdpStreamSocket) {
+        withContext(NonCancellable) { runCatching { socket.close() } }
+    }
+
+    /** GPX R65 — a connect job of an older generation must not clear the flag of a newer one. */
+    private fun connectFailed(gen: Long) {
+        gate.locked { if (gate.isCurrent(gen)) isStreaming = false }
+    }
+
+    // Called with the gate's monitor held, so the stopping check, `isStreaming` and the launch are one step.
+    private fun connectLocked(url: String?, isRetry: Boolean) {
         if (!isRetry) doingRetry = true
         if (!isStreaming || isRetry) {
             isStreaming = true
+            val gen = gate.generation
 
             job = scope.launch {
                 if (url == null) {
-                    isStreaming = false
+                    connectFailed(gen)
                     onMainThread {
                         connectChecker.onConnectionFailed("Endpoint malformed, should be: http://ip:port/path")
                     }
@@ -207,7 +243,7 @@ class WhipClient(private val connectChecker: ConnectChecker) {
                 val urlParser = try {
                     UrlParser.parse(url, validSchemes)
                 } catch (_: URISyntaxException) {
-                    isStreaming = false
+                    connectFailed(gen)
                     onMainThread {
                         connectChecker.onConnectionFailed("Endpoint malformed, should be: http://ip:port/path")
                     }
@@ -219,7 +255,7 @@ class WhipClient(private val connectChecker: ConnectChecker) {
                 val port = urlParser.port ?: if (tlsEnabled) 443 else 8889
                 val path = urlParser.getFullPath().removePrefix("/")
                 if (path.isEmpty()) {
-                    isStreaming = false
+                    connectFailed(gen)
                     onMainThread {
                         connectChecker.onConnectionFailed("Endpoint malformed, should be: http://ip:port/path")
                     }
@@ -296,9 +332,17 @@ class WhipClient(private val connectChecker: ConnectChecker) {
                     val socket = StreamSocket.createUdpSocket(socketType, bindHost, 0, socketTimeout)
                     socket.bind()
                     socket.setRemoteAddress(host, port)
-                    // GPX R14 — held so disconnect() can close it.
-                    iceSocket = socket
                     connectSocket = socket
+                    // GPX R14 — held so disconnect() can close it.
+                    // GPX R65 — only a current connect may hold it; a stale one closes its own socket,
+                    // so a cancelled attempt never leaves the media socket open.
+                    val held = gate.locked {
+                        (gate.isCurrent(gen)).also { if (it) iceSocket = socket }
+                    }
+                    if (!held) {
+                        closeQuietly(socket)
+                        return@launch
+                    }
 
                     val dtlsTransport = DtlsTransport(socket)
                     val requestId = commandsManager.generateTransactionId()
@@ -343,7 +387,7 @@ class WhipClient(private val connectChecker: ConnectChecker) {
                     }
                     if (!requestSuccessReceived) {
                         runCatching { socket.close() }
-                        iceSocket = null
+                        if (iceSocket === socket) iceSocket = null
                         onMainThread {
                             connectChecker.onConnectionFailed("ICE connectivity check failed (no STUN binding success from server)")
                         }
@@ -386,7 +430,7 @@ class WhipClient(private val connectChecker: ConnectChecker) {
                     }
                     if (!nominateSuccessReceived) {
                         runCatching { socket.close() }
-                        iceSocket = null
+                        if (iceSocket === socket) iceSocket = null
                         onMainThread {
                             connectChecker.onConnectionFailed("ICE nomination failed (no STUN success for USE-CANDIDATE)")
                         }
@@ -399,7 +443,7 @@ class WhipClient(private val connectChecker: ConnectChecker) {
                         // GPX R57 — release the socket and report, rather than return with the media
                         // socket open and the connection silent.
                         runCatching { socket.close() }
-                        iceSocket = null
+                        if (iceSocket === socket) iceSocket = null
                         onMainThread {
                             connectChecker.onConnectionFailed("Error configure stream, DTLS certificate or fingerprint missing")
                         }
@@ -409,10 +453,19 @@ class WhipClient(private val connectChecker: ConnectChecker) {
                     val dtlsResult = CompletableDeferred<Result<SrtpKeys>>()
                     val isDtlsServer = commandsManager.remoteSdpInfo?.isActiveMode ?: false
                     Log.i(TAG, "Using dtls ${if (isDtlsServer) "server" else "client"} role")
-                    dtlsConnection = if (isDtlsServer) {
+                    val dtls = if (isDtlsServer) {
                         DtlsServerConnection(certificate, fingerprint)
                     } else {
                         DtlsClientConnection(certificate, fingerprint)
+                    }
+                    // GPX R65 — a stale connect does not publish its DTLS connection, so it can never
+                    // overwrite the field of a newer one. It ends here; the stop closed its socket.
+                    val dtlsHeld = gate.locked {
+                        gate.isCurrent(gen).also { if (it) dtlsConnection = dtls }
+                    }
+                    if (!dtlsHeld) {
+                        closeQuietly(socket)
+                        return@launch
                     }
 
                     // GPX R47 — a fault in the receive loop is reported, not swallowed. The loop used to
@@ -435,7 +488,7 @@ class WhipClient(private val connectChecker: ConnectChecker) {
                         ).run()
                     }
 
-                    dtlsConnection?.start(dtlsTransport, object : DtlsConnection.Callback {
+                    dtls.start(dtlsTransport, object : DtlsConnection.Callback {
                         override fun onHandshakeComplete(keys: SrtpKeys) {
                             dtlsResult.complete(Result.success(keys))
                         }
@@ -449,10 +502,10 @@ class WhipClient(private val connectChecker: ConnectChecker) {
                     val srtpKeys = result.getOrNull()
                     if (srtpKeys == null) {
                         dispatchJob.cancel()
-                        dtlsConnection?.close()
-                        dtlsConnection = null
+                        dtls.close()
+                        if (dtlsConnection === dtls) dtlsConnection = null
                         runCatching { socket.close() }
-                        iceSocket = null
+                        if (iceSocket === socket) iceSocket = null
                         onMainThread {
                             connectChecker.onConnectionFailed("DTLS handshake failed: ${result.exceptionOrNull()?.message}")
                         }
@@ -460,6 +513,10 @@ class WhipClient(private val connectChecker: ConnectChecker) {
                     }
                     Log.i(TAG, "dtls connected!!")
                     onMainThread { connectChecker.onConnectionSuccess() }
+                    // GPX R65 — the stop cancels this job first, so a cancelled job stops here; the
+                    // generation covers a job that outlived the stop's capped wait.
+                    ensureActive()
+                    if (!gate.isCurrent(gen)) return@launch
                     whipSender.setSocketsInfo(socket)
                     whipSender.setCrypto(srtpKeys.rtp, srtpKeys.rtcp)
                     whipSender.start()
@@ -470,7 +527,13 @@ class WhipClient(private val connectChecker: ConnectChecker) {
                     // GPX R57 — a cancelled attempt ends quietly. A read that failed because
                     // disconnect() closed the socket (iceSocket no longer points at it) is a stop, not a
                     // fault, so nothing is reported. Any other fault releases the socket it opened.
-                    if (error is CancellationException) throw error
+                    // GPX R65 — a cancelled or stale attempt also closes the media socket it opened: the
+                    // stop closes the one in the field, and this one may have been published after it.
+                    if (error is CancellationException || !gate.isCurrent(gen)) {
+                        connectSocket?.let { closeQuietly(it) }
+                        if (error is CancellationException) throw error
+                        return@launch
+                    }
                     val failedSocket = connectSocket
                     if (failedSocket != null && iceSocket !== failedSocket) {
                         Log.i(TAG, "connect interrupted by disconnect: ${error.validMessage()}")
@@ -478,7 +541,7 @@ class WhipClient(private val connectChecker: ConnectChecker) {
                     }
                     if (failedSocket != null) {
                         runCatching { failedSocket.close() }
-                        iceSocket = null
+                        if (iceSocket === failedSocket) iceSocket = null
                     }
                     Log.e(TAG, "connection error", error)
                     onMainThread {
@@ -527,18 +590,54 @@ class WhipClient(private val connectChecker: ConnectChecker) {
     }
 
     fun disconnect() {
+        // GPX R65 — the stop starts here, synchronously, so a connect() that follows at once is seen
+        // as arriving during a stop. The connect jobs and the retry jobs are cancelled now, the stop
+        // always wins; the teardown below waits for them.
+        gate.locked {
+            gate.beginStop()
+            scope.cancel()
+            scopeRetry.cancel()
+        }
         CoroutineScope(Dispatchers.IO).launch {
             disconnect(true)
         }
     }
 
+    // GPX R65 — one teardown at a time, and it runs to its end even when its caller is cancelled (a
+    // retry's teardown is cancelled by a user stop). The scope is replaced and the stop ends, with a
+    // deferred connect started, in the `finally`, so a throw cannot leave the client stopping forever.
     private suspend fun disconnect(clear: Boolean) {
+        teardownLock.withLock {
+            withContext(NonCancellable) {
+                val connectScope = gate.locked {
+                    gate.supersede()
+                    scope.also { it.cancel() }
+                }
+                try {
+                    teardown(clear, connectScope)
+                } finally {
+                    gate.locked {
+                        scope = CoroutineScope(Dispatchers.IO)
+                        if (clear) {
+                            // a throw part-way through the teardown must not leave the client
+                            // streaming or the retry scope cancelled
+                            isStreaming = false
+                            if (!scopeRetry.isActive) scopeRetry = CoroutineScope(Dispatchers.IO)
+                            gate.endStop { connectLocked(it, false) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private suspend fun teardown(clear: Boolean, connectScope: CoroutineScope) {
         // GPX R58 — clear the field before anything is torn down. R47's receive loop reads "iceSocket
         // no longer this socket" as "closed on purpose", and closing the DTLS connection below already
         // fails the loop's read, so the field must say so before that close.
         val closing = iceSocket
         iceSocket = null
-        dtlsConnection?.close()
+        runCatching { dtlsConnection?.close() } // GPX R65 — a throw here must not end the teardown
         dtlsConnection = null
         if (isStreaming) whipSender.stop()
         // GPX R14 — close the ICE and media UDP socket so an in-flight STUN read unblocks and the OS
@@ -563,27 +662,31 @@ class WhipClient(private val connectChecker: ConnectChecker) {
                 connectChecker.onDisconnect()
             }
             mutex = Mutex(true)
-            jobRetry?.cancelAndJoin()
+            // GPX R65 — every retry job, not the one in the field; they were cancelled when the stop began.
+            val retryScope = scopeRetry
+            retryScope.cancel()
+            withTimeoutOrNull(ConnectGate.CONNECT_JOIN_TIMEOUT_MS.milliseconds) { retryScope.coroutineContext.job.join() }
             jobRetry = null
-            scopeRetry.cancel()
             scopeRetry = CoroutineScope(Dispatchers.IO)
         } else {
             commandsManager.clear()
         }
-        job?.cancelAndJoin()
+        // GPX R65 — wait for every connect job of the scope, not the one in the `job` field, with a
+        // capped wait: a job stuck in a call that ignores cancellation cannot hang the stop, and its
+        // generation is stale, so it writes nothing when it wakes.
+        withTimeoutOrNull(ConnectGate.CONNECT_JOIN_TIMEOUT_MS.milliseconds) { connectScope.coroutineContext.job.join() }
         job = null
-        // GPX R62 — stop the sender again, now that the connect job is gone, whether or not it was
-        // running when the guard above read it. The connect job is cancelled only here, and it can
-        // run on to whipSender.start() after that guard, which leaves a sender on a closed socket
-        // that no later stop reaches (fork plan, R62). BaseSender.stop() is safe on a sender that
-        // never started, and on one the guard already stopped.
+        // GPX R62 — stop the sender again, now that the connect jobs are gone, whether or not it was
+        // running when the guard above read it (fork plan, R62). Before R65 the connect job was
+        // cancelled only here and could start the sender after that guard; now the stop cancels it
+        // when it begins, so this stop is the safety net for a job that was already past its
+        // cancellation checks. BaseSender.stop() is safe on a sender that never started, and on one
+        // the guard already stopped.
         whipSender.stop()
         // GPX R42 — cleared on both a stop and a retry's teardown, after the connect job has joined
         // so it cannot restart the clock behind this. isStreaming stays true through a retry, so
         // without this the retry window would report the old session's silence.
         inboundSilence.reset()
-        scope.cancel()
-        scope = CoroutineScope(Dispatchers.IO)
     }
 
     fun sendVideo(videoBuffer: ByteBuffer, info: MediaCodec.BufferInfo) {
@@ -606,12 +709,16 @@ class WhipClient(private val connectChecker: ConnectChecker) {
 
     @JvmOverloads
     fun reConnect(delay: Long, backupUrl: String? = null) {
-        jobRetry = scopeRetry.launch {
-            reTries--
-            disconnect(false)
-            delay(delay.milliseconds)
-            val reconnectUrl = backupUrl ?: url
-            connect(reconnectUrl, true)
+        gate.locked {
+            // GPX R65 — a retry that arrives during a user stop does not start.
+            if (gate.stopping()) return
+            jobRetry = scopeRetry.launch {
+                reTries--
+                disconnect(false)
+                delay(delay.milliseconds)
+                val reconnectUrl = backupUrl ?: url
+                connect(reconnectUrl, true)
+            }
         }
     }
 

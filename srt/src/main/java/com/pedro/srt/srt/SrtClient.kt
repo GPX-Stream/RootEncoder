@@ -23,6 +23,7 @@ import com.pedro.common.ConnectChecker
 import com.pedro.common.ConnectionFailed
 import com.pedro.common.UrlParser
 import com.pedro.common.VideoCodec
+import com.pedro.common.base.ConnectGate
 import com.pedro.common.frame.MediaFrame
 import com.pedro.common.TimeUtils
 import com.pedro.common.onMainThread
@@ -51,12 +52,19 @@ import com.pedro.srt.srt.packets.control.handshake.extension.HandshakeExtension
 import com.pedro.srt.utils.SrtSocket
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.IOException
 import java.net.SocketTimeoutException
@@ -82,6 +90,13 @@ class SrtClient(private val connectChecker: ConnectChecker) {
   private var job: Job? = null
   private var scopeRetry = CoroutineScope(Dispatchers.IO)
   private var jobRetry: Job? = null
+
+  // GPX R65 — the stop count, the generation and the deferred connect (fork plan, R65). Never held
+  // across a suspension or a callback.
+  private val gate = ConnectGate()
+  // GPX R65 — one teardown at a time. Taken only by coroutines on IO, never by a caller of
+  // connect(), so nothing on the main thread waits for it.
+  private val teardownLock = Mutex()
 
   private var checkServerAlive = false
 
@@ -228,16 +243,40 @@ class SrtClient(private val connectChecker: ConnectChecker) {
 
   @JvmOverloads
   fun connect(url: String?, isRetry: Boolean = false) {
+    gate.locked {
+      // GPX R65 — a connect that arrives while a stop runs is remembered and started after the
+      // teardown (the latest url wins). A retry's connect is dropped: the stop wins.
+      if (gate.stopping()) {
+        if (!isRetry) gate.defer(url)
+        return
+      }
+      connectLocked(url, isRetry)
+    }
+  }
+
+  /** GPX R65 — closes a socket even when the calling job is already cancelled. */
+  private suspend fun closeQuietly(socket: SrtSocket) {
+    withContext(NonCancellable) { runCatching { socket.close() } }
+  }
+
+  /** GPX R65 — a connect job of an older generation must not clear the flag of a newer one. */
+  private fun connectFailed(gen: Long) {
+    gate.locked { if (gate.isCurrent(gen)) isStreaming = false }
+  }
+
+  // Called with the gate's monitor held, so the stopping check, `isStreaming` and the launch are one step.
+  private fun connectLocked(url: String?, isRetry: Boolean) {
     if (!isRetry) doingRetry = true
     if (!isStreaming || isRetry) {
       // GPX R60 — a new connection starts with no reading, so a reused client reports -1 from
       // getInboundSilenceMs() until its own handshake completes, never the last connection's silence.
       lastInboundMs = 0L
       isStreaming = true
+      val gen = gate.generation
 
       job = scope.launch {
         if (url == null) {
-          isStreaming = false
+          connectFailed(gen)
           onMainThread {
             connectChecker.onConnectionFailed("Endpoint malformed, should be: srt://ip:port/streamid")
           }
@@ -251,7 +290,7 @@ class SrtClient(private val connectChecker: ConnectChecker) {
         val urlParser = try {
           UrlParser.parse(url, validSchemes)
         } catch (_: URISyntaxException) {
-          isStreaming = false
+          connectFailed(gen)
           onMainThread {
             connectChecker.onConnectionFailed("Endpoint malformed, should be: srt://ip:port/streamid")
           }
@@ -282,7 +321,7 @@ class SrtClient(private val connectChecker: ConnectChecker) {
           commandsManager.setPassphrase(passphrase, encryptionType)
         }
         if (path.isEmpty()) {
-          isStreaming = false
+          connectFailed(gen)
           onMainThread {
             connectChecker.onConnectionFailed("Endpoint malformed, should be: srt://ip:port/streamid")
           }
@@ -290,11 +329,22 @@ class SrtClient(private val connectChecker: ConnectChecker) {
         }
         commandsManager.host = host
 
+        // GPX R65 — the socket this attempt opened, so the failure handler can close it when the
+        // attempt is cancelled or stale.
+        var connectSocket: SrtSocket? = null
         val error = runCatching {
           // GPX R8 — short read timeout during the handshake so a missed reply re-knocks on the
           // cadence instead of blocking the whole latency window on one packet.
-          socket = SrtSocket(socketType, host, port, HANDSHAKE_RETRANSMIT_MS)
-          socket?.connect()
+          val newSocket = SrtSocket(socketType, host, port, HANDSHAKE_RETRANSMIT_MS)
+          connectSocket = newSocket
+          // GPX R65 — only a current connect may publish its socket; a stale one closes its own, so
+          // a cancelled attempt never leaves the media socket open.
+          val held = gate.locked { gate.isCurrent(gen).also { if (it) socket = newSocket } }
+          if (!held) {
+            closeQuietly(newSocket)
+            return@launch
+          }
+          newSocket.connect()
           commandsManager.loadStartTs()
 
           // GPX R8, floored by GPX R48 — total knock budget for both phases: the latency-derived
@@ -338,13 +388,23 @@ class SrtClient(private val connectChecker: ConnectChecker) {
             onMainThread {
               connectChecker.onConnectionSuccess()
             }
+            // GPX R65 — the stop cancels this job first, so a cancelled job stops here; the
+            // generation covers a job that outlived the stop's capped wait.
+            ensureActive()
+            if (!gate.isCurrent(gen)) return@launch
             srtSender.socket = socket
             srtSender.start()
             lastInboundMs = nowMs()
-            handleServerPackets()
+            handleServerPackets(this@launch, gen)
           }
         }.exceptionOrNull()
         if (error != null) {
+          // GPX R65 — a cancelled or stale attempt ends quietly and closes the socket it opened.
+          if (error is CancellationException || !gate.isCurrent(gen)) {
+            connectSocket?.let { closeQuietly(it) }
+            if (error is CancellationException) throw error
+            return@launch
+          }
           Log.e(TAG, "connection error", error)
           onMainThread {
             connectChecker.onConnectionFailed("Error configure stream, ${error.validMessage()}")
@@ -379,7 +439,8 @@ class SrtClient(private val connectChecker: ConnectChecker) {
   ): Handshake? {
     var lastSendMs = 0L
     var gapMs = HANDSHAKE_RETRANSMIT_MS
-    while (scope.isActive && nowMs() < deadlineMs) {
+    // GPX R65 — this connect's own job, not the `scope` field, which the stop replaces.
+    while (currentCoroutineContext().isActive && nowMs() < deadlineMs) {
       val now = nowMs()
       if (lastSendMs == 0L || now - lastSendMs >= gapMs) {
         send()
@@ -404,19 +465,55 @@ class SrtClient(private val connectChecker: ConnectChecker) {
   }
 
   fun disconnect() {
+    // GPX R65 — the stop starts here, synchronously, so a connect() that follows at once is seen as
+    // arriving during a stop. The connect jobs and the retry jobs are cancelled now, the stop always
+    // wins; the teardown below waits for them.
+    gate.locked {
+      gate.beginStop()
+      scope.cancel()
+      scopeRetry.cancel()
+    }
     CoroutineScope(Dispatchers.IO).launch {
       disconnect(true)
     }
   }
 
+  // GPX R65 — one teardown at a time, and it runs to its end even when its caller is cancelled (a
+  // retry's teardown is cancelled by a user stop). The scope is replaced and the stop ends, with a
+  // deferred connect started, in the `finally`, so a throw cannot leave the client stopping forever.
   private suspend fun disconnect(clear: Boolean) {
+    teardownLock.withLock {
+      withContext(NonCancellable) {
+        val connectScope = gate.locked {
+          gate.supersede()
+          scope.also { it.cancel() }
+        }
+        try {
+          teardown(clear, connectScope)
+        } finally {
+          gate.locked {
+            scope = CoroutineScope(Dispatchers.IO)
+            if (clear) {
+              // a throw part-way through the teardown must not leave the client streaming or the
+              // retry scope cancelled
+              isStreaming = false
+              if (!scopeRetry.isActive) scopeRetry = CoroutineScope(Dispatchers.IO)
+              gate.endStop { connectLocked(it, false) }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  private suspend fun teardown(clear: Boolean, connectScope: CoroutineScope) {
     if (isStreaming) srtSender.stop(clear)
     runCatching {
       withTimeoutOrNull(100.milliseconds) {
         commandsManager.writeShutdown(socket)
       }
     }
-    socket?.close()
+    runCatching { socket?.close() } // GPX R65 — a throw here must not end the teardown
     if (clear) {
       reTries = numRetry
       doingRetry = false
@@ -424,27 +521,31 @@ class SrtClient(private val connectChecker: ConnectChecker) {
       onMainThread {
         connectChecker.onDisconnect()
       }
-      jobRetry?.cancelAndJoin()
+      // GPX R65 — every retry job, not the one in the field; they were cancelled when the stop began.
+      val retryScope = scopeRetry
+      retryScope.cancel()
+      withTimeoutOrNull(ConnectGate.CONNECT_JOIN_TIMEOUT_MS.milliseconds) { retryScope.coroutineContext.job.join() }
       jobRetry = null
-      scopeRetry.cancel()
       scopeRetry = CoroutineScope(Dispatchers.IO)
     }
     commandsManager.reset()
     rtt = 0
     packetsLost = 0
     packetsLostUnique = 0
-    job?.cancelAndJoin()
+    // GPX R65 — wait for every connect job of the scope, not the one in the `job` field, with a
+    // capped wait: a job stuck in a call that ignores cancellation cannot hang the stop, and its
+    // generation is stale, so it writes nothing when it wakes.
+    withTimeoutOrNull(ConnectGate.CONNECT_JOIN_TIMEOUT_MS.milliseconds) { connectScope.coroutineContext.job.join() }
     job = null
-    // GPX R63 — stop the sender again, now that the connect job is gone, whether or not it was
-    // running when the guard above read it. The connect job is cancelled only here, and it can run
-    // on to srtSender.start() after that guard, which leaves a sender on a closed socket that no
-    // later stop reaches (fork plan, R63). BaseSender.stop() is safe on a sender that never
+    // GPX R63 — stop the sender again, now that the connect jobs are gone, whether or not it was
+    // running when the guard above read it (fork plan, R63). Before R65 the connect job was
+    // cancelled only here and could start the sender after that guard; now the stop cancels it
+    // when it begins, so this stop is the safety net for a job that was already past its
+    // cancellation checks. BaseSender.stop() is safe on a sender that never
     // started, and on one the guard already stopped. Not cleared: the guard already applied [clear] to
     // a sender it stopped, and a client that was never streaming keeps the stream info and the
     // Mpeg2TsService the caller set.
     srtSender.stop(false)
-    scope.cancel()
-    scope = CoroutineScope(Dispatchers.IO)
   }
 
   fun reConnect(delay: Long) {
@@ -452,19 +553,26 @@ class SrtClient(private val connectChecker: ConnectChecker) {
   }
 
   fun reConnect(delay: Long, backupUrl: String?) {
-    jobRetry = scopeRetry.launch {
-      reTries--
-      disconnect(false)
-      delay(delay.milliseconds)
-      val reconnectUrl = backupUrl ?: url
-      connect(reconnectUrl, true)
+    gate.locked {
+      // GPX R65 — a retry that arrives during a user stop does not start.
+      if (gate.stopping()) return
+      jobRetry = scopeRetry.launch {
+        reTries--
+        disconnect(false)
+        delay(delay.milliseconds)
+        val reconnectUrl = backupUrl ?: url
+        connect(reconnectUrl, true)
+      }
     }
   }
 
   @Throws(IOException::class)
-  private suspend fun handleServerPackets() {
+  // GPX R65 — [connectScope] is the connect job's own scope and [gen] its generation: the loop ends
+  // when either is gone, and ends only that job. It used to read and cancel the `scope` field, which
+  // after a stop is the next connect's scope.
+  private suspend fun handleServerPackets(connectScope: CoroutineScope, gen: Long) {
     var lastServerPacketTs = TimeUtils.getCurrentTimeMillis()
-    while (scope.isActive && isStreaming) {
+    while (connectScope.isActive && gate.isCurrent(gen) && isStreaming) {
       val error = runCatching {
         if (isAlive()) {
           //ignore packet after connect if tunneled to avoid spam idle
@@ -474,17 +582,17 @@ class SrtClient(private val connectChecker: ConnectChecker) {
           onMainThread {
             connectChecker.onConnectionFailed("No response from server")
           }
-          scope.cancel()
+          connectScope.cancel()
         }
       }.exceptionOrNull()
       if (error != null && ConnectionFailed.parse(error.validMessage()) != ConnectionFailed.TIMEOUT) {
-        scope.cancel()
+        connectScope.cancel()
       } else if (error != null && serverSilenceTimeoutMs > 0 &&
         TimeUtils.getCurrentTimeMillis() - lastServerPacketTs >= serverSilenceTimeoutMs) {
         onMainThread {
           connectChecker.onConnectionFailed("No response from server")
         }
-        scope.cancel()
+        connectScope.cancel()
       }
     }
   }

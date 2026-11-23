@@ -1094,7 +1094,7 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       the app uses both. Separately, `WhipClient.disconnect()` that overlaps a new `connect()`
       (between `isStreaming = false` and the join of `job`) leaves the old connect job running with
       nothing holding it. These are tracked in `gpxstream-app` issue #1102: fixed in R63 and R64;
-      R65 is a design.
+      R65 fixes the overlap.
       **Tests.** `WhipConnectStopRaceTest` drives the real `WhipClient` against a fake ingest (a
       local HTTP server for the offer, a UDP peer that answers the STUN checks, the fork's own
       `DtlsServerConnection` as the other end) and places the stop with the `ConnectChecker`: the
@@ -1127,7 +1127,7 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       must keep what the caller set. The early guard stays. The retry path (`disconnect(false)`)
       shares the tail.
       **Not changed.** The connect job itself, and the overlap of a new `connect()` with a stop
-      (R65, design only).
+      (R65 fixes the overlap, and cancels the connect job at the top of a stop).
       **Tests.** `SrtConnectStopRaceTest` drives the real `SrtClient` against a loopback UDP server that
       answers the SRT handshake (the pattern of `SrtInboundSilenceTest`) and places the stop with the
       `ConnectChecker`, as `WhipConnectStopRaceTest` does. Four tests: the stop in the window leaves no
@@ -1158,7 +1158,8 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       is either a duplicate close of the same id or a `close/` that the server rejects, and a failure
       is only logged (`Close request failed`). Harmless to the stream, and one stray HTTP request on a
       tunnelled stop. The app does not use the tunnelled schemes.
-      **Not changed.** The connect job itself, and the overlap of a new `connect()` with a stop (R65).
+      **Not changed.** The connect job itself, and the overlap of a new `connect()` with a stop (R65
+      fixes the overlap, and cancels the connect job at the top of a stop).
       **Tests.** `RtmpConnectStopRaceTest` drives the real `RtmpClient` against a fake ingest on a
       loopback TCP port: it does the RTMP handshake, and answers `connect` and `createStream` with
       `_result` and `publish` with `onStatus NetStream.Publish.Start`, built with the fork's own
@@ -1167,8 +1168,8 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       test fails; the other three pass both ways.
       Markers: `git grep -n "GPX R64"`.
 
-- [ ] R65 — DESIGN ONLY, not implemented: a `connect()` that lands inside a stop (`gpxstream-app`
-      issue #1102; the design needs Andy's reading before any code)
+- [x] R65 — a `connect()` that lands inside a stop is deferred, and a stop cancels a connect
+      (`gpxstream-app` issue #1102; fork fix approved by Andy 2026-11-23)
       **What a person sees.** After a stop that overlapped a start, the client says it is streaming
       (`isStreaming` true) with nothing connecting and nothing sending, and every later `connect()` is
       ignored until a `disconnect()`. The consumer is told nothing. The natural trigger is a consumer
@@ -1196,19 +1197,14 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       second job also leaves the media socket it opened open (SRT: `socket = SrtSocket(...)` in the
       connect job; RTMP: `establishConnection`; WHIP: `iceSocket`) until the next `disconnect()`
       closes the field.
-      **Same shape in the other clients (lines at this head).** `SrtClient`: the sender guard in
-      `disconnect(clear)` near 413, `job = scope.launch` near 238, `isStreaming = false` near 423,
-      the join near 436. `RtmpClient`: guard near 580, `job = scope.launch` near 247,
-      `isStreaming = false` near 590, join near 601. Each has the same guard on `connect`
-      (`!isStreaming || isRetry`) and the same field overwrite.
-      **What is real and what is not.** Steps 2 to 5 and the stuck `isStreaming` are driven by
-      `WhipConnectStopRaceTest` ("a connect during a stop ..."), which asserts today's behaviour (marked
-      DEFECT) and fails once this is fixed (under fix A by timing out on "stop finished", because the
-      stop then waits for the first job, which the test holds); rewrite it with the fix. The claim that the first job can start a sender after the
-      stop is narrower than it reads: `scope.cancel()` cancels it, and a job returning from
-      `onConnectionSuccess` after that is cancelled before `whipSender.start()`. Only a job that is on
-      the CPU between the stop's second sender stop and its scope cancel could start one, a window
-      no test can place. R62's second stop does cover the jobs that start earlier.
+      **Same shape in the other clients.** `SrtClient` and `RtmpClient` have the same guard on
+      `connect` (`!isStreaming || isRetry`), the same `job` field overwrite and the same scope
+      replacement as the last line of `disconnect`. The SRT and RTMP connect job is also the read
+      loop of the live stream, so it stays alive for the whole connection.
+      **The design that was weighed (kept for the reasoning).** Options A to D below were laid out
+      for Andy, who ruled on 2026-11-23: a connect during a stop is deferred (D, deferral), a stop
+      cancels a running connect at the very top (the stop always wins), and the retry path is
+      covered. What was built is under "The fix".
       **Options.**
       - A. Join every connect job, not the one in the field: cancel and join the scope's own job
         (`scope.coroutineContext.job.cancelAndJoin()`) in place of `job?.cancelAndJoin()`. One line, no
@@ -1242,15 +1238,82 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       **Recommendation.** A and B together, plus D with deferral. A is the one-line root fix for the
       unawaited job and costs nothing. B stops a stale job from writing shared state. D is what the
       consumer sees: a start that arrives during a stop runs after it, instead of being swallowed.
-      Not C: a lock buys little over B and brings the main-thread deadlock risk. Apply the same change
-      to `SrtClient` and `RtmpClient`, which share the shape, with the same kind of tests. Whether D
-      should defer or refuse is Andy's call. Two more questions for Andy: whether the three clients
-      should also cancel the connect job at the very top of `disconnect(clear)`, keeping the join and
-      the tail stop (a sender then never starts after a stop, and the interval in which a sender runs
-      on the closed socket, from `start()` to the tail stop, goes away; a further fork edit), and
-      whether R65 should cover the retry path (`reConnect`, which the app never calls).
-      **Test.** The documenting test above; no fix in this entry.
-      Markers: `git grep -n "GPX R65"` (the test only).
+      Not C: a lock buys little over B and brings the main-thread deadlock risk.
+      **The fix (all three clients; `ConnectGate` in `common` holds the shared state).**
+      - *Stopping state.* `disconnect()` calls `ConnectGate.beginStop()` before it launches its
+        coroutine: a stop count (not a flag, so a second stop ending cannot clear the first), the
+        generation raised, a deferred connect dropped. The state sits behind one plain monitor
+        (`synchronized`), never held across a suspension, a callback or a join, so it cannot
+        deadlock with the main-thread hop of `onConnectionStarted` and `onDisconnect`.
+      - *Deferral.* `connect()` checks "stopping" before `isStreaming` (`isStreaming` is still true
+        until the teardown clears it, so the old order dropped the call). While stopping it
+        remembers the url, the latest wins, and returns. The teardown's last step starts the
+        remembered connect through the normal path (`connectLocked`, inside the monitor, so a
+        `connect()` at that moment cannot slip in between): `onConnectionStarted`, then the result.
+        A `disconnect()` that arrives while a connect is deferred drops it (the stop wins).
+        `isStreaming` is false from the deferred `connect()` until the deferred connect starts.
+      - *Cancel at the top.* `disconnect()` cancels the connect scope and the retry scope at once,
+        before the teardown coroutine runs; the teardown cancels the connect scope again at its
+        top. A connect held in `onConnectionSuccess` is cancelled before it can start the sender.
+      - *Join every job, capped.* The old `job?.cancelAndJoin()` is replaced by a join of the
+        scope's own job (every child), capped at `ConnectGate.CONNECT_JOIN_TIMEOUT_MS` (1 s, as
+        `BaseSender.stop` waits for its job; not a dashboard setting). The R62 to R64 tail sender
+        stop stays.
+      - *Generation.* A connect job reads the generation when it starts. It checks it before it
+        clears `isStreaming`, before it publishes its media socket (`iceSocket`, `socket`) and its
+        DTLS connection, and before it starts the sender; a job of an older generation ends quietly
+        and closes the socket it opened. A cancelled or stale job also closes its own socket on the
+        way out. SRT and RTMP read loops end on the job's own scope, not on the `scope` field the
+        stop replaces, and a cancelled loop reports no read failure.
+      - *One teardown at a time.* The teardown takes a `Mutex` (`teardownLock`) that only coroutines
+        on IO take, never a caller of `connect()`, so nothing on Main waits for it. The body runs
+        under `NonCancellable`, and the scope replacement and the end of the stop are in a
+        `finally`, so a throw cannot leave the client stopping forever.
+      - *Retry path.* `reConnect` while stopping does nothing; a retry's `connect(url, true)` that
+        lands while stopping is dropped, not deferred (a deferred retry would restart a stream the
+        user just stopped); a user stop cancels the retry scope when it begins and joins it
+        (capped) before it ends. A retry's own teardown (`disconnect(false)`) is not a stop and
+        does not count as stopping.
+      **What the app sees.** `connect()` and `disconnect()` keep their signatures. A `connect()` during
+      a stop returns at once with `isStreaming` still false, and the connection starts when the
+      stop ends, raising `onConnectionStarted` once then. A stop raises `onDisconnect` once. A stop
+      no longer reports a failure from the read loop that the stop itself ended. A connect error
+      is reported once as before. A deferred connect can be cancelled only by another
+      `disconnect()`. The reducer's pattern (the next connect straight after
+      `Disconnected`, from inside `onDisconnect`) now streams.
+      **Not changed.** `WhipClient.commandsManager.clear()` still drops the SPS and PPS at a stop, so
+      a deferred WHIP connect with video finds no SPS if the encoder supplied it before the
+      teardown reached that line, and waits 5 s then fails with "sps or pps is null". The WHIP
+      tests use audio only and cannot see it; it is an open question for `gpxstream-app` issue
+      #1102 (put to Andy in the PR report). The other senders (UDP, RTSP) are also unchanged.
+      **Known limit.** A connect job blocked in a call that ignores cancellation (WHIP's offer
+      request, `Requests.makeRequest`, which can take longer than the 1 s wait) is released by the
+      capped join and ends quietly when it returns, but the offer call has already written the
+      shared `commandsManager` (`certificate`, `localSdpInfo`, `remoteSdpInfo`, `sessionUrl`) by
+      then, and a connect that started in the meantime sees those values. The generation keeps such
+      a job from touching `isStreaming`, the sockets and the sender, not the command state.
+      **Tests.** The three `*ConnectStopRaceTest` files, fifteen each, written first and run
+      against the code before the fix (scratch worktree, no fix): WHIP 10, SRT 11 and RTMP 9 of
+      the fifteen failed. They cover: a connect during a stop is deferred and then streams (the
+      first connection's socket closed, the second open); two connects, the latest runs; a
+      deferred connect then a stop starts nothing; a connect from inside `onDisconnect`;
+      `disconnect()` then `connect()` back to back with no gate; a connect job that outlives the
+      stop's capped wait writes nothing and the next connect keeps streaming; two `disconnect()`
+      calls do not interleave; a retry stops and connects again; a user stop during a retry's
+      backoff cancels the retry connect; a `reConnect` during a stop does not start; a retry's
+      `connect(url, true)` during a stop is dropped. Green without the fix, so they pin behaviour
+      that must not regress and are not evidence of the fix: a stop while `onConnectionSuccess`
+      is still running; a retry stops and connects again; a real connect error is reported once;
+      a user stop during a retry's backoff; and in WHIP and RTMP a connect then a stop. RTMP also
+      passes "a deferred connect then a disconnect" without the fix. The R62 to R64 tests changed in what they prove: the stop now cancels the
+      connect job before the guard, so the first test no longer drives the job past the sender
+      guard to the tail stop (that interval no longer exists: it asserts the job is cancelled and
+      never starts a sender); the tail stop is kept as a cheap safety net and has no deterministic
+      test. The WHIP fake ingest now serves a second session, and the RTMP fake ingest accepts more
+      than one connection. The window after the join and before the scope is replaced lasts
+      microseconds and no gate can place a `connect()` in it; the stopping state, held until the scope
+      is replaced, is what closes it, and the back-to-back test exercises the path.
+      Markers: `git grep -n "GPX R65"`.
 
 ## Correction to R14's scope
 
