@@ -249,16 +249,13 @@ class WhipConnectStopRaceTest {
   private fun stopLeakedSender(client: WhipClient) = runBlocking { senderOf(client).stop() }
 
   /**
-   * GPX R62 — CHARACTERIZATION OF A DEFECT (gpxstream-app issue #1097). This test passes because it
-   * asserts the defective behaviour; it must be flipped to the safe assertions in the comments when
-   * WhipClient is fixed.
-   *
-   * A stop that arrives after `onConnectionSuccess` has been called and before `whipSender.start()`
-   * leaves the sender running on the socket the stop just closed, `isStreaming` false, and a second
-   * `disconnect()` skips `whipSender.stop()`.
+   * GPX R62 — a stop that arrives after `onConnectionSuccess` has been called and before
+   * `whipSender.start()` leaves no sender running, and a second `disconnect()` is harmless. Without
+   * the fix the connect job starts the sender after the stop's sender-stop guard has already run, and
+   * nothing stops it afterwards.
    */
   @Test
-  fun `DEFECT 1097 a stop between onConnectionSuccess and sender start leaves the sender running`() {
+  fun `a stop between onConnectionSuccess and sender start leaves no sender running`() {
     val checker = GatedChecker().apply { gateDisconnect = true }
     val client = client(checker)
     try {
@@ -282,25 +279,17 @@ class WhipConnectStopRaceTest {
       checker.releaseDisconnect.countDown()
       waitUntil("stop finished") { connectJob(client) == null }
 
-      // DEFECT: the stop is over and the sender is running. Safe behaviour: assertFalse.
-      assertTrue("DEFECT: sender left running after the stop finished", running(client))
+      // The connect job did run on to start(): the stop must stop that sender too.
+      assertFalse("sender left running after the stop finished", running(client))
       assertFalse(client.isStreaming)
 
-      // A second stop does nothing about it, because the guard reads isStreaming (false).
+      // A second stop is harmless.
       val before = checker.disconnects.get()
       client.disconnect()
       waitUntil("second disconnect reached onDisconnect") { checker.disconnects.get() > before }
-      // DEFECT: still running. Safe behaviour: assertFalse.
-      assertTrue("DEFECT: second disconnect did not stop the sender", running(client))
-
-      // Not asserted: what the leaked sender does with a frame. A stopped sender drops it. The unit
-      // test BufferInfo is a stub (size 0), so the frame is empty and this only shows what happens.
-      client.sendAudio(ByteBuffer.wrap(ByteArray(8)), android.media.MediaCodec.BufferInfo())
-      Thread.sleep(1_000)
-      println(
-        "GPX R62 after the stop, a frame sent to the leaked sender: failures=${checker.failures} " +
-          "sentAudioFrames=${client.sentAudioFrames} itemsInCache=${client.getItemsInCache()}"
-      )
+      waitUntil("second stop finished") { connectJob(client) == null }
+      assertFalse("sender running after the second disconnect", running(client))
+      assertEquals(emptyList<String>(), checker.failures.toList())
     } finally {
       stopLeakedSender(client)
     }
@@ -329,6 +318,48 @@ class WhipConnectStopRaceTest {
       assertFalse("sender must not be running", running(client))
       assertFalse(client.isStreaming)
       assertEquals(emptyList<String>(), checker.failures.toList())
+    } finally {
+      stopLeakedSender(client)
+    }
+  }
+
+  /** GPX R62 — an ordinary connect and stop still stops the running sender, and reports nothing. */
+  @Test
+  fun `a connect then a stop stops the running sender`() {
+    val checker = GatedChecker().apply { releaseSuccess.countDown() }
+    val client = client(checker)
+    try {
+      client.connect(ingest!!.url)
+      waitUntil("sender running after connect") { running(client) }
+
+      client.disconnect()
+      waitUntil("stop finished") { connectJob(client) == null && checker.disconnects.get() == 1 }
+
+      assertFalse("sender must not be running", running(client))
+      assertFalse(client.isStreaming)
+      assertEquals(emptyList<String>(), checker.failures.toList())
+    } finally {
+      stopLeakedSender(client)
+    }
+  }
+
+  /** GPX R62 — a real connect error is still reported once, and the stop that follows adds no second report. */
+  @Test
+  fun `a real connect error is reported once`() {
+    val checker = GatedChecker()
+    val client = client(checker)
+    try {
+      // nothing listens on port 1, so the offer fails
+      client.connect("http://127.0.0.1:1/whip")
+      waitUntil("connect error reported") { checker.failures.isNotEmpty() }
+
+      client.disconnect()
+      waitUntil("stop finished") { checker.disconnects.get() == 1 }
+      Thread.sleep(300)
+
+      assertEquals(1, checker.failures.size)
+      assertTrue(checker.failures[0], checker.failures[0].startsWith("Error configure stream, offer failed"))
+      assertFalse(running(client))
     } finally {
       stopLeakedSender(client)
     }

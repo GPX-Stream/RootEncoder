@@ -1065,35 +1065,41 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       (`WhipClient.connect`, the lines after "dtls connected"): the sender then starts on the
       closed socket, `isStreaming` is already false, and the next `disconnect` skips
       `whipSender.stop()`. A separate defect, tracked as `gpxstream-app` issue #1097; no code for it
-      in R61. R62 tests whether that claim is real.
+      in R61. R62 fixes it.
       **Tests.** `WhipSenderStopTest`, with a fake media socket: a stop while a write is in flight
       reports nothing; a send fault while running reports once. Revert check: the stop test fails
       without the fix (`NeverWantedButInvoked`) and passes with it; the fault test passes both ways.
       Markers: `git grep -n "GPX R61"`.
 
-- [x] R62 test — a stop between `onConnectionSuccess` and `whipSender.start()` (`gpxstream-app` issue
-      #1097; test-only edit approved by Andy 2026-11-23, no main code changed, no fix)
-      **Result: the defect is real.** `WhipConnectStopRaceTest` drives the real `WhipClient` against a
-      fake ingest (a local HTTP server for the offer, a UDP peer that answers the STUN checks, the
-      fork's own `DtlsServerConnection` as the other end of the handshake) and places the stop
-      with the `ConnectChecker`: the connect job is held inside `onConnectionSuccess`, `disconnect()`
-      is held inside `onDisconnect` (which runs after the `if (isStreaming) whipSender.stop()` guard
-      and before `job?.cancelAndJoin()`), then the connect job is released. It runs on to
-      `whipSender.start()` because nothing cancelled it yet.
-      **What it observes.** After the stop has finished: the sender is running, `isStreaming` is
-      false, and a second `disconnect()` does not stop the sender (its guard reads `isStreaming`).
-      The neighbouring case is safe and is tested too: a stop that lands while `onConnectionSuccess`
-      is still running cancels the connect job, `withContext` throws on return, and `start()` is
-      never reached.
-      **Bound on the severity.** The next `connect()` calls `whipSender.start()`, whose first act is
-      to cancel the old sender job, so the leak does not outlive a restart. The window is the few
-      lines with no suspension point between `onMainThread` returning and `start()`.
-      **Not changed.** `WhipClient` is untouched. The test asserts the defective behaviour and says
-      so; flip its two `DEFECT` assertions to the safe values when the defect is fixed. The fix needs
-      its own approval.
-      **Revert check.** With `whipSender.stop()` added after `job?.cancelAndJoin()` in a scratch copy,
-      the defect test fails at its first `DEFECT` assertion and the safe-case test still passes;
-      the scratch edit was undone.
+- [x] R62 — a stop between a WHIP connect and the sender start leaves no sender running
+      (`gpxstream-app` issue #1097; fork fix approved by Andy 2026-11-23)
+      **What a person sees.** Nothing on screen, and the bench could not reach it in 136 tries. After
+      such a stop the app believes the stream is stopped while a sender runs on a socket the stop
+      closed, and a second stop does not stop it. The next start cancels it, so it does not outlive
+      a restart.
+      **The cause.** `WhipClient.disconnect` reads `isStreaming` to decide whether to stop the
+      sender, closes the socket, sets `isStreaming` false, and only then cancels the connect job. A
+      connect job that has returned from `onConnectionSuccess` has no suspension point before
+      `whipSender.start()`, so it runs on and starts the sender after the stop's guard has already
+      run. `isStreaming` is then false, so no later stop touches the sender.
+      **The fix.** `disconnect` stops the sender once more after the connect job has been cancelled
+      and joined, whether or not the sender was running. `BaseSender.stop()` is safe on a sender
+      that never started (no job, `stopImp` closes what is there) and on one the early guard already
+      stopped (the socket closes are idempotent). The early guard stays, so a running sender still
+      stops before the socket closes (R61's order). The retry path (`disconnect(false)`) shares the
+      same tail, so the same line covers a retry's teardown.
+      **Not changed.** `RtmpClient`, `SrtClient` and the other clients; the connect job itself.
+      **Tests.** `WhipConnectStopRaceTest` drives the real `WhipClient` against a fake ingest (a
+      local HTTP server for the offer, a UDP peer that answers the STUN checks, the fork's own
+      `DtlsServerConnection` as the other end) and places the stop with the `ConnectChecker`: the
+      connect job is held inside `onConnectionSuccess` and `disconnect()` inside `onDisconnect`
+      (which runs after the sender-stop guard and before `job?.cancelAndJoin()`), then the connect
+      job is released. Four tests: that case leaves no sender running and a second `disconnect()`
+      is harmless; a stop while `onConnectionSuccess` is still running does not start the sender;
+      a connect then a stop stops the running sender; a real connect error is reported once. Revert
+      check: without the fix only the first test fails (`sender left running after the stop
+      finished`); the other three pass both ways. The test skips itself on a machine with no
+      non-loopback IPv4 address.
       Markers: `git grep -n "GPX R62"`.
 
 ## Correction to R14's scope
