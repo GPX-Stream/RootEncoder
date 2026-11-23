@@ -572,6 +572,12 @@ class WhipClient(private val connectChecker: ConnectChecker) {
         }
         job?.cancelAndJoin()
         job = null
+        // GPX R62 — stop the sender again, now that the connect job is gone, whether or not it was
+        // running when the guard above read it. The connect job is cancelled only here, and it can
+        // run on to whipSender.start() after that guard, which leaves a sender on a closed socket
+        // that no later stop reaches (fork plan, R62). BaseSender.stop() is safe on a sender that
+        // never started, and on one the guard already stopped.
+        whipSender.stop()
         // GPX R42 — cleared on both a stop and a retry's teardown, after the connect job has joined
         // so it cannot restart the clock behind this. isStreaming stays true through a retry, so
         // without this the retry window would report the old session's silence.
