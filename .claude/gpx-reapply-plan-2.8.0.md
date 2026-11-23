@@ -1278,20 +1278,34 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       a stop returns at once with `isStreaming` still false, and the connection starts when the
       stop ends, raising `onConnectionStarted` once then. A stop raises `onDisconnect` once. A stop
       no longer reports a failure from the read loop that the stop itself ended. A connect error
-      is reported once as before. The reducer's pattern (the next connect straight after
+      is reported once as before. A deferred connect can be cancelled only by another
+      `disconnect()`. The reducer's pattern (the next connect straight after
       `Disconnected`, from inside `onDisconnect`) now streams.
       **Not changed.** `WhipClient.commandsManager.clear()` still drops the SPS and PPS at a stop, so
-      a deferred WHIP connect with video needs `setVideoInfo` again after the stop ends (the app
-      restarts its encoder for a new stream; recorded as a question in the issue). The other senders
-      (UDP, RTSP) and the one-line checks of the senders themselves.
-      **Tests.** The three `*ConnectStopRaceTest` files, fourteen each, written first and shown red
-      against the code before the fix: a connect during a stop is deferred and then streams (no
-      leaked socket); two connects, the latest runs; a deferred connect then a stop starts nothing;
-      a connect from inside `onDisconnect`; `disconnect()` then `connect()` back to back with no
-      gate; a connect job that outlives the stop's capped wait writes nothing and the next connect
-      keeps streaming; two `disconnect()` calls do not interleave; a retry stops and connects
-      again; a user stop during a retry's backoff cancels the retry connect; a retry during a stop
-      does not start. The R62 to R64 tests changed in what they prove: the stop now cancels the
+      a deferred WHIP connect with video finds no SPS if the encoder supplied it before the
+      teardown reached that line, and waits 5 s then fails with "sps or pps is null". The WHIP
+      tests use audio only and cannot see it; it is an open question for `gpxstream-app` issue
+      #1102 (put to Andy in the PR report). The other senders (UDP, RTSP) are also unchanged.
+      **Known limit.** A connect job blocked in a call that ignores cancellation (WHIP's offer
+      request, `Requests.makeRequest`, which can take longer than the 1 s wait) is released by the
+      capped join and ends quietly when it returns, but the offer call has already written the
+      shared `commandsManager` (`certificate`, `localSdpInfo`, `remoteSdpInfo`, `sessionUrl`) by
+      then, and a connect that started in the meantime sees those values. The generation keeps such
+      a job from touching `isStreaming`, the sockets and the sender, not the command state.
+      **Tests.** The three `*ConnectStopRaceTest` files, fifteen each, written first and run
+      against the code before the fix (scratch worktree, no fix): WHIP 10, SRT 11 and RTMP 9 of
+      the fifteen failed. They cover: a connect during a stop is deferred and then streams (the
+      first connection's socket closed, the second open); two connects, the latest runs; a
+      deferred connect then a stop starts nothing; a connect from inside `onDisconnect`;
+      `disconnect()` then `connect()` back to back with no gate; a connect job that outlives the
+      stop's capped wait writes nothing and the next connect keeps streaming; two `disconnect()`
+      calls do not interleave; a retry stops and connects again; a user stop during a retry's
+      backoff cancels the retry connect; a `reConnect` during a stop does not start; a retry's
+      `connect(url, true)` during a stop is dropped. Green without the fix, so they pin behaviour
+      that must not regress and are not evidence of the fix: a stop while `onConnectionSuccess`
+      is still running; a retry stops and connects again; a real connect error is reported once;
+      a user stop during a retry's backoff; and in WHIP and RTMP a connect then a stop. RTMP also
+      passes "a deferred connect then a disconnect" without the fix. The R62 to R64 tests changed in what they prove: the stop now cancels the
       connect job before the guard, so the first test no longer drives the job past the sender
       guard to the tail stop (that interval no longer exists: it asserts the job is cancelled and
       never starts a sender); the tail stop is kept as a cheap safety net and has no deterministic
