@@ -1037,8 +1037,9 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       before the change (the old check reported "No response from server" at 5.5 s; the old reading
       stayed at the previous connection's 30 s). Markers: `git grep -n "GPX R60"`.
 
-- [x] R61 — a WHIP stop is not reported as "Error send packet" (`gpxstream-app` issue #1096; fork
-      edit approved by Andy 2026-11-23)
+- [x] R61 — a stop is not reported as "Error send packet", in every sender (`gpxstream-app` issue
+      #1096; fork edit approved by Andy 2026-11-23 for WHIP, widened by Andy the same day to a guard
+      in `BaseSender` for all protocols)
       **What a person sees.** Nothing on screen. The blackbox (flight recorder) held a
       `ConnectionFailed(reason=Error send packet, ClosedChannelException)` 6 ms after `StopPublish` on
       a deliberate stop, and the consumer reads that report in `Stopping` as the stop finishing and in
@@ -1048,16 +1049,30 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       write that is still in flight. That write throws `ClosedChannelException` and the error path
       reported it, because it did not look at `running`. R58 had already kept the receive loop quiet;
       the sender is the other reader of the same socket.
-      **The fix.** The sender's error path returns quietly, with a log line, when `running` is already
-      false. `stop()` clears `running` before it closes anything, so the mark is set before the close.
-      A fault while `running` is true (for example `Network is unreachable` in a network cut) is still
-      reported once, and the sender then sets `running` false itself, as before.
-      **Not changed.** The same error path exists in `RtmpSender`, `RtspSender`, `SrtSender` and
-      `UdpSender` (and the same order in `BaseSender.stop()`). Not touched: this app does not use
-      them. A fix there, or once in `BaseSender`, is its own change.
-      **Tests.** `WhipSenderStopTest`, with a fake media socket: a stop while a write is in flight
-      reports nothing; a send fault while running reports once. Revert check: the stop test fails
-      without the fix (`NeverWantedButInvoked`) and passes with it; the fault test passes both ways.
+      **The fix.** `BaseSender.reportSendError` is the one place a send error is reported. It returns
+      quietly, with a log line, when `running` is already false. `stop()` clears `running` before it
+      closes anything, so the mark is set before the close. A fault while `running` is true (for
+      example `Network is unreachable` in a network cut) is still reported once, and `running` is
+      cleared so the loop ends, as before. `WhipSender`, `RtmpSender`, `RtspSender`, `SrtSender` and
+      `UdpSender` each replace their own copy of the report with a call to it; the five copies were
+      identical.
+      **Which senders were reachable.** Only a sender whose `stopImp()` closes the media socket fails
+      a write before `stop()` cancels the sender job: WHIP, and RTSP over UDP (`RtpSocketUdp` and
+      `SenderReportUdp` close their sockets). RTMP, SRT, UDP and RTSP over TCP close the socket in
+      the client after `stop()` has cancelled and joined the job, and a cancelled job cannot deliver
+      the report, so for them the guard is defence in depth (and covers the `unlockNeeded` close when
+      a write ignores the cancel). Checked in every client: `stop()` runs before the client closes its
+      socket (`RtmpClient`, `RtspClient`, `SrtClient`, `UdpClient`, `WhipClient.disconnect`).
+      **Not changed.** `UdpSender` passes the tag "SrtSender" to `BaseSender` (an upstream copy
+      mistake), so its log lines read as SRT's. Left as is.
+      **Tests.** `BaseSenderSendErrorTest` tests the guard itself. `WhipSenderStopTest`,
+      `RtmpSenderStopTest`, `RtspSenderStopTest` (TCP), `SrtSenderStopTest` and `UdpSenderStopTest`
+      drive each real sender with a socket whose write blocks until the stop closes it: a stop while
+      a write is in flight reports nothing, a send fault while running reports once. Revert check
+      (guard condition disabled): `BaseSenderSendErrorTest` (both tests) and the `WhipSenderStopTest`
+      stop test fail; the RTMP, RTSP, SRT and UDP tests pass either way, for the reason above, so
+      they pin the routing and the fault report, not the fix. RTSP over UDP needs real UDP sockets
+      and has no test.
       Markers: `git grep -n "GPX R61"`.
 
 ## Correction to R14's scope

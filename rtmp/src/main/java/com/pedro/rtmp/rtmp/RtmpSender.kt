@@ -22,8 +22,6 @@ import com.pedro.common.ConnectChecker
 import com.pedro.common.VideoCodec
 import com.pedro.common.base.BaseSender
 import com.pedro.common.frame.MediaFrame
-import com.pedro.common.onMainThread
-import com.pedro.common.validMessage
 import com.pedro.rtmp.flv.BasePacket
 import com.pedro.rtmp.flv.FlvPacket
 import com.pedro.rtmp.flv.FlvType
@@ -117,11 +115,8 @@ class RtmpSender(
         }
       }.exceptionOrNull()
       if (error != null) {
-        onMainThread {
-          connectChecker.onConnectionFailed("Error send packet, ${error.validMessage()}")
-        }
-        Log.e(TAG, "send error: ", error)
-        running = false
+        // GPX R61 — a send error caused by a stop is not reported; see BaseSender.reportSendError.
+        reportSendError(error)
         return
       }
     }

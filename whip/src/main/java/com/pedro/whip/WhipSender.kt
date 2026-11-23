@@ -6,9 +6,7 @@ import com.pedro.common.ConnectChecker
 import com.pedro.common.VideoCodec
 import com.pedro.common.base.BaseSender
 import com.pedro.common.frame.MediaFrame
-import com.pedro.common.onMainThread
 import com.pedro.common.socket.base.UdpStreamSocket
-import com.pedro.common.validMessage
 import com.pedro.rtsp.rtcp.BaseSenderReport
 import com.pedro.rtsp.rtp.packets.AacPacket
 import com.pedro.rtsp.rtp.packets.Av1Packet
@@ -120,20 +118,9 @@ class WhipSender(
                 }
             }.exceptionOrNull()
             if (error != null) {
-                // GPX R61 — a send that failed because stop() closed the socket under it is a stop,
-                // not a fault. BaseSender.stop() clears `running` before stopImp() closes the socket,
-                // so `running` already false here means the close was on purpose. A fault while the
-                // stream runs still gets one report; the same reading is not applied to the other
-                // protocols' senders (fork plan, R61).
-                if (!running) {
-                    Log.i(TAG, "send interrupted by stop: ${error.validMessage()}")
-                    return
-                }
-                onMainThread {
-                    connectChecker.onConnectionFailed("Error send packet, ${error.validMessage()}")
-                }
-                Log.e(TAG, "send error: ", error)
-                running = false
+                // GPX R61 — a send that failed because stop() closed the socket under it (stopImp
+                // below closes rtpSocket) is a stop, not a fault; see BaseSender.reportSendError.
+                reportSendError(error)
                 return
             }
         }

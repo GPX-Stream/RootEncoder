@@ -8,6 +8,8 @@ import com.pedro.common.StreamBlockingQueue
 import com.pedro.common.clone
 import com.pedro.common.StreamingStatsMonitor
 import com.pedro.common.frame.MediaFrame
+import com.pedro.common.onMainThread
+import com.pedro.common.validMessage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -84,6 +86,25 @@ abstract class BaseSender(
         } finally {
             bufferPool.release(mediaFrame.data)
         }
+    }
+
+    /**
+     * GPX R61 — the one place a sender reports a failed send. [stop] clears `running` before it
+     * closes anything, so a send error that arrives with `running` already false was caused by the
+     * stop closing the connection under a write in flight: it is logged and nothing is reported. A
+     * fault while the stream runs is reported once, and `running` is cleared so the send loop ends.
+     * Senders call this from their send loop and return afterwards.
+     */
+    protected suspend fun reportSendError(error: Throwable) {
+        if (!running) {
+            Log.i(TAG, "send interrupted by stop: ${error.validMessage()}")
+            return
+        }
+        onMainThread {
+            connectChecker.onConnectionFailed("Error send packet, ${error.validMessage()}")
+        }
+        Log.e(TAG, "send error: ", error)
+        running = false
     }
 
     suspend fun start() {
