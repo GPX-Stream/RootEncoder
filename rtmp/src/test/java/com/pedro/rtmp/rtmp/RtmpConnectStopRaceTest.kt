@@ -43,6 +43,11 @@ import kotlin.concurrent.thread
  * `onDisconnect` after it has read `isStreaming` for the sender-stop guard and before it cancels the
  * connect job. Holding the connect job inside `onConnectionSuccess` and `disconnect()` inside
  * `onDisconnect` puts the stop exactly in the window, with no timing.
+ *
+ * GPX R65 — the stop now cancels the connect job when it begins (before the sender-stop guard), so
+ * the connect job can no longer be driven past the guard to the sender start; the first test checks
+ * that the cancelled job starts no sender. The R65 tests below cover a connect during a stop, the
+ * stop's capped wait and the retry path (fork plan, R65).
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class RtmpConnectStopRaceTest {
@@ -283,7 +288,7 @@ class RtmpConnectStopRaceTest {
       await("onConnectionSuccess entered", checker.successEntered)
 
       client.disconnect()
-      // disconnect() runs to job.cancelAndJoin(), which cancels the connect job and waits for it.
+      // GPX R65 — disconnect() cancels the connect job as it begins, then waits for it.
       waitUntil("connect job cancelled by the stop") { connectJob(client)?.isCancelled == true }
 
       checker.releaseSuccess.countDown()
@@ -332,6 +337,8 @@ class RtmpConnectStopRaceTest {
       assertStreaming(client, checker)
       assertEquals("the stop raised onDisconnect once", 1, checker.disconnects.get())
       assertTrue("the second connection has its own socket", field(client, "socket") !== firstSocket)
+      assertFalse("the cancelled first connection's socket was closed", (firstSocket as com.pedro.rtmp.utils.socket.RtmpSocket).isConnected())
+      assertTrue("the second connection's socket is open", (field(client, "socket") as com.pedro.rtmp.utils.socket.RtmpSocket).isConnected())
 
       checker.gateDisconnect = false
       client.disconnect()
@@ -555,12 +562,46 @@ class RtmpConnectStopRaceTest {
 
       client.disconnect()
       await("onDisconnect entered", checker.disconnectEntered)
-      client.reConnect(100)
+      client.reConnect(50)
+      // still inside the gated stop: a retry that was allowed to run would have connected by now
+      Thread.sleep(500)
+      assertEquals("the retry did not connect during the stop", 1, checker.startedUrls.size)
       checker.releaseDisconnect.countDown()
       waitUntil("stop finished") { !client.isStreaming && field(client, "job") == null }
       Thread.sleep(800)
 
       assertEquals(1, checker.startedUrls.size)
+      assertFalse(client.isStreaming)
+      assertFalse(running(client))
+    } finally {
+      stopLeakedSender(client)
+    }
+  }
+
+  /**
+   * GPX R65 — a retry's own `connect(url, true)` that lands inside a stop is dropped, not deferred:
+   * the user stopped, so a retry must not bring the stream back. (A plain `connect(url)` in the same
+   * place is deferred.)
+   */
+  @Test
+  fun `a retry connect that lands inside a stop is dropped`() {
+    val checker = GatedChecker().apply {
+      gateDisconnect = true
+      releaseSuccess.countDown()
+    }
+    val client = RtmpClient(checker)
+    try {
+      client.connect(ingest!!.url)
+      waitUntil("running") { running(client) }
+
+      client.disconnect()
+      await("onDisconnect entered", checker.disconnectEntered)
+      client.connect(ingest!!.url + "?n=retry", true)
+      checker.releaseDisconnect.countDown()
+      waitUntil("stop finished") { !client.isStreaming && field(client, "job") == null }
+      Thread.sleep(800)
+
+      assertEquals("the retry connect was dropped", listOf(ingest!!.url), checker.startedUrls.toList())
       assertFalse(client.isStreaming)
       assertFalse(running(client))
     } finally {

@@ -618,7 +618,13 @@ class WhipClient(private val connectChecker: ConnectChecker) {
                 } finally {
                     gate.locked {
                         scope = CoroutineScope(Dispatchers.IO)
-                        if (clear) gate.endStop { connectLocked(it, false) }
+                        if (clear) {
+                            // a throw part-way through the teardown must not leave the client
+                            // streaming or the retry scope cancelled
+                            isStreaming = false
+                            if (!scopeRetry.isActive) scopeRetry = CoroutineScope(Dispatchers.IO)
+                            gate.endStop { connectLocked(it, false) }
+                        }
                     }
                 }
             }
@@ -631,7 +637,7 @@ class WhipClient(private val connectChecker: ConnectChecker) {
         // fails the loop's read, so the field must say so before that close.
         val closing = iceSocket
         iceSocket = null
-        dtlsConnection?.close()
+        runCatching { dtlsConnection?.close() } // GPX R65 — a throw here must not end the teardown
         dtlsConnection = null
         if (isStreaming) whipSender.stop()
         // GPX R14 — close the ICE and media UDP socket so an in-flight STUN read unblocks and the OS
@@ -670,11 +676,12 @@ class WhipClient(private val connectChecker: ConnectChecker) {
         // generation is stale, so it writes nothing when it wakes.
         withTimeoutOrNull(ConnectGate.CONNECT_JOIN_TIMEOUT_MS.milliseconds) { connectScope.coroutineContext.job.join() }
         job = null
-        // GPX R62 — stop the sender again, now that the connect job is gone, whether or not it was
-        // running when the guard above read it. The connect job is cancelled only here, and it can
-        // run on to whipSender.start() after that guard, which leaves a sender on a closed socket
-        // that no later stop reaches (fork plan, R62). BaseSender.stop() is safe on a sender that
-        // never started, and on one the guard already stopped.
+        // GPX R62 — stop the sender again, now that the connect jobs are gone, whether or not it was
+        // running when the guard above read it (fork plan, R62). Before R65 the connect job was
+        // cancelled only here and could start the sender after that guard; now the stop cancels it
+        // when it begins, so this stop is the safety net for a job that was already past its
+        // cancellation checks. BaseSender.stop() is safe on a sender that never started, and on one
+        // the guard already stopped.
         whipSender.stop()
         // GPX R42 — cleared on both a stop and a retry's teardown, after the connect job has joined
         // so it cannot restart the clock behind this. isStreaming stays true through a retry, so

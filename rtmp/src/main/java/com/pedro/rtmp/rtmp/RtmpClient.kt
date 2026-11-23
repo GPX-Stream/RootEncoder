@@ -411,6 +411,13 @@ class RtmpClient(private val connectChecker: ConnectChecker) {
       throw CancellationException("connect superseded by a stop")
     }
     socket.connect()
+    // GPX R65 — the stop may have closed this socket before the connect finished, which closes
+    // nothing; a connect that completes after the stop's cancel or on a stale generation closes its
+    // own socket here.
+    if (!currentCoroutineContext().isActive || !gate.isCurrent(gen)) {
+      withContext(NonCancellable) { runCatching { socket.close() } }
+      throw CancellationException("connect superseded by a stop")
+    }
     if (!socket.isConnected()) return false
     val timestamp = TimeUtils.getCurrentTimeMillis() / 1000
     val handshake = Handshake()
@@ -607,7 +614,7 @@ class RtmpClient(private val connectChecker: ConnectChecker) {
   }
 
   private suspend fun closeConnection() {
-    socket?.close()
+    runCatching { socket?.close() } // GPX R65 — a throw here must not end the teardown
     commandsManager.reset()
   }
 
@@ -655,7 +662,14 @@ class RtmpClient(private val connectChecker: ConnectChecker) {
         } finally {
           gate.locked {
             scope = CoroutineScope(Dispatchers.IO)
-            if (clear) gate.endStop { connectLocked(it, false) }
+            if (clear) {
+              // a throw part-way through the teardown must not leave the client streaming or the
+              // retry and ping scopes cancelled
+              isStreaming = false
+              if (!scopeRetry.isActive) scopeRetry = CoroutineScope(Dispatchers.IO)
+              if (!scopePing.isActive) scopePing = CoroutineScope(Dispatchers.IO)
+              gate.endStop { connectLocked(it, false) }
+            }
           }
         }
       }
@@ -691,10 +705,11 @@ class RtmpClient(private val connectChecker: ConnectChecker) {
     // generation is stale, so it writes nothing when it wakes.
     withTimeoutOrNull(ConnectGate.CONNECT_JOIN_TIMEOUT_MS.milliseconds) { connectScope.coroutineContext.job.join() }
     job = null
-    // GPX R64 — stop the sender again, now that the connect job is gone, whether or not it was
-    // running when the guard above read it. The connect job is cancelled only here, and it can run
-    // on to rtmpSender.start() after that guard, which leaves a sender on a closed socket that no
-    // later stop reaches (fork plan, R64). BaseSender.stop() is safe on a sender that never
+    // GPX R64 — stop the sender again, now that the connect jobs are gone, whether or not it was
+    // running when the guard above read it (fork plan, R64). Before R65 the connect job was
+    // cancelled only here and could start the sender after that guard; now the stop cancels it
+    // when it begins, so this stop is the safety net for a job that was already past its
+    // cancellation checks. BaseSender.stop() is safe on a sender that never
     // started, and on one the guard already stopped. Not cleared: the guard already applied [clear] to
     // a sender it stopped, and a client that was never streaming keeps the stream info the caller set.
     rtmpSender.stop(false, unlockNeeded = { socket?.close() })

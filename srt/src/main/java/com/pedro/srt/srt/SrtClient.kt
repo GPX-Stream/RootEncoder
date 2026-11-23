@@ -493,7 +493,13 @@ class SrtClient(private val connectChecker: ConnectChecker) {
         } finally {
           gate.locked {
             scope = CoroutineScope(Dispatchers.IO)
-            if (clear) gate.endStop { connectLocked(it, false) }
+            if (clear) {
+              // a throw part-way through the teardown must not leave the client streaming or the
+              // retry scope cancelled
+              isStreaming = false
+              if (!scopeRetry.isActive) scopeRetry = CoroutineScope(Dispatchers.IO)
+              gate.endStop { connectLocked(it, false) }
+            }
           }
         }
       }
@@ -507,7 +513,7 @@ class SrtClient(private val connectChecker: ConnectChecker) {
         commandsManager.writeShutdown(socket)
       }
     }
-    socket?.close()
+    runCatching { socket?.close() } // GPX R65 — a throw here must not end the teardown
     if (clear) {
       reTries = numRetry
       doingRetry = false
@@ -531,10 +537,11 @@ class SrtClient(private val connectChecker: ConnectChecker) {
     // generation is stale, so it writes nothing when it wakes.
     withTimeoutOrNull(ConnectGate.CONNECT_JOIN_TIMEOUT_MS.milliseconds) { connectScope.coroutineContext.job.join() }
     job = null
-    // GPX R63 — stop the sender again, now that the connect job is gone, whether or not it was
-    // running when the guard above read it. The connect job is cancelled only here, and it can run
-    // on to srtSender.start() after that guard, which leaves a sender on a closed socket that no
-    // later stop reaches (fork plan, R63). BaseSender.stop() is safe on a sender that never
+    // GPX R63 — stop the sender again, now that the connect jobs are gone, whether or not it was
+    // running when the guard above read it (fork plan, R63). Before R65 the connect job was
+    // cancelled only here and could start the sender after that guard; now the stop cancels it
+    // when it begins, so this stop is the safety net for a job that was already past its
+    // cancellation checks. BaseSender.stop() is safe on a sender that never
     // started, and on one the guard already stopped. Not cleared: the guard already applied [clear] to
     // a sender it stopped, and a client that was never streaming keeps the stream info and the
     // Mpeg2TsService the caller set.
