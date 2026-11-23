@@ -22,8 +22,10 @@ import com.pedro.common.ConnectChecker
 import com.pedro.common.VideoCodec
 import com.pedro.common.base.BaseSender
 import com.pedro.common.frame.MediaFrame
+import com.pedro.common.onMainThread
 import com.pedro.common.socket.base.SocketType
 import com.pedro.common.socket.base.TcpStreamSocket
+import com.pedro.common.validMessage
 import com.pedro.rtsp.rtcp.BaseSenderReport
 import com.pedro.rtsp.rtp.packets.AacPacket
 import com.pedro.rtsp.rtp.packets.Av1Packet
@@ -137,9 +139,11 @@ class RtspSender(
         }
       }.exceptionOrNull()
       if (error != null) {
-        // GPX R61 — a send error caused by a stop is not reported; see BaseSender.reportSendError.
-        // Over UDP, stopImp below closes the media sockets, so this path is reachable on a stop.
-        reportSendError(error)
+        onMainThread {
+          connectChecker.onConnectionFailed("Error send packet, ${error.validMessage()}")
+        }
+        Log.e(TAG, "send error: ", error)
+        running = false
         return
       }
     }

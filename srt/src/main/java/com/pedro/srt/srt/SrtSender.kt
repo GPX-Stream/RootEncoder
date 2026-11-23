@@ -22,6 +22,8 @@ import com.pedro.common.ConnectChecker
 import com.pedro.common.VideoCodec
 import com.pedro.common.base.BaseSender
 import com.pedro.common.frame.MediaFrame
+import com.pedro.common.onMainThread
+import com.pedro.common.validMessage
 import com.pedro.srt.mpeg2ts.MpegTsPacket
 import com.pedro.srt.mpeg2ts.MpegTsPacketizer
 import com.pedro.srt.mpeg2ts.MpegType
@@ -152,8 +154,11 @@ class SrtSender(
         }
       }.exceptionOrNull()
       if (error != null) {
-        // GPX R61 — a send error caused by a stop is not reported; see BaseSender.reportSendError.
-        reportSendError(error)
+        onMainThread {
+          connectChecker.onConnectionFailed("Error send packet, ${error.validMessage()}")
+        }
+        Log.e(TAG, "send error: ", error)
+        running = false
         return
       }
     }
