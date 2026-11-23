@@ -1037,6 +1037,40 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       before the change (the old check reported "No response from server" at 5.5 s; the old reading
       stayed at the previous connection's 30 s). Markers: `git grep -n "GPX R60"`.
 
+- [x] R61 — a WHIP stop is not reported as "Error send packet" (`gpxstream-app` issue #1096; fork
+      edit approved by Andy 2026-11-23)
+      **What a person sees.** Nothing on screen. The blackbox (flight recorder) held a
+      `ConnectionFailed(reason=Error send packet, ClosedChannelException)` 6 ms after `StopPublish` on
+      a deliberate stop, and the consumer reads that report in `Stopping` as the stop finishing and in
+      `Connecting` or `Streaming` as a failure that starts a recovery, so it is never inert.
+      **The cause.** `WhipSender.onRun` reports any exception from the send. A stop calls
+      `BaseSender.stop()`, which clears `running` and then `stopImp()` closes the media socket under a
+      write that is still in flight. That write throws `ClosedChannelException` and the error path
+      reported it, because it did not look at `running`. R58 had already kept the receive loop quiet;
+      the sender is the other reader of the same socket.
+      **The fix.** The sender's error path returns quietly, with a log line, when `running` is already
+      false. `stop()` clears `running` before it closes anything, so the mark is set before the close.
+      A fault while `running` is true (for example `Network is unreachable` in a network cut) is still
+      reported once, and the sender then sets `running` false itself, as before.
+      **Not changed.** `RtmpSender`, `RtspSender`, `SrtSender` and `UdpSender` have the same error
+      path, and `BaseSender.stop()` has the same order. The app reaches `SrtSender` and `RtmpSender`
+      through `GenericTransport`, but their clients stop the sender (which cancels and joins its
+      job) before they close the socket (`SrtClient.disconnect`, `RtmpClient.disconnect`), and
+      `SrtSender.stopImp` and `RtmpSender.stopImp` close no socket, so a stop does not fail a live
+      write there. `UdpSender` is the same, and the app does not use it. `RtspSender` over UDP
+      shares the WHIP order (its `stopImp` closes the media sockets), so it has the same defect; the
+      app does not use RTSP and it is left alone. A guard once in `BaseSender` was considered and
+      not done, because the senders the app uses cannot hit it.
+      **Not covered.** A stop that lands between `onConnectionSuccess` and `whipSender.start()`
+      (`WhipClient.connect`, the lines after "dtls connected"): the sender then starts on the
+      closed socket, `isStreaming` is already false, and the next `disconnect` skips
+      `whipSender.stop()`. A separate defect, tracked as `gpxstream-app` issue #1097; no code for it
+      in R61.
+      **Tests.** `WhipSenderStopTest`, with a fake media socket: a stop while a write is in flight
+      reports nothing; a send fault while running reports once. Revert check: the stop test fails
+      without the fix (`NeverWantedButInvoked`) and passes with it; the fault test passes both ways.
+      Markers: `git grep -n "GPX R61"`.
+
 ## Correction to R14's scope
 
 The original item list described R14 from the old branch's commit titles, which overstated
