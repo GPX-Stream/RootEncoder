@@ -49,12 +49,23 @@ class RtmpConnectStopRaceTest {
 
   /** One RTMP ingest: handshake, then the three answers that take the client to "publishing". */
   private class FakeIngest {
-    private val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    private val server = ServerSocket(0, 5, InetAddress.getByName("127.0.0.1"))
     val url get() = "rtmp://127.0.0.1:${server.localPort}/app/stream"
 
+    // GPX R65 — serves every connection that arrives, one thread each, so a client that connects a
+    // second time (a deferred connect, a retry) gets its own session.
     private val worker = thread(isDaemon = true) {
       try {
-        serve()
+        while (true) {
+          val client = server.accept()
+          thread(isDaemon = true) {
+            try {
+              serve(client)
+            } catch (_: Exception) {
+              // closed by the client or by close()
+            }
+          }
+        }
       } catch (_: Exception) {
         // closed by close()
       }
@@ -71,8 +82,7 @@ class RtmpConnectStopRaceTest {
       return bytes
     }
 
-    private fun serve() {
-      val client = server.accept()
+    private fun serve(client: java.net.Socket) {
       val input = client.getInputStream()
       val output = client.getOutputStream()
       val c0c1 = input.readFully(1537)
@@ -127,9 +137,25 @@ class RtmpConnectStopRaceTest {
     val disconnects = AtomicInteger(0)
     val failures = CopyOnWriteArrayList<String>()
 
-    override fun onConnectionStarted(url: String) {}
+    // GPX R65 — every url `onConnectionStarted` was called with, in order, and the successes.
+    val startedUrls = CopyOnWriteArrayList<String>()
+    val successes = AtomicInteger(0)
+
+    // GPX R65 — with true, only the first `onConnectionSuccess` waits on `releaseSuccess`; later
+    // connects pass through. Lets a test hold one stale connect job while a later one streams.
+    @Volatile var gateFirstSuccessOnly = false
+
+    // GPX R65 — runs inside `onDisconnect`: the app's pattern of starting the next connect from it.
+    @Volatile var onDisconnectHook: (() -> Unit)? = null
+
+    override fun onConnectionStarted(url: String) {
+      startedUrls.add(url)
+    }
+
     override fun onConnectionSuccess() {
+      val n = successes.incrementAndGet()
       successEntered.countDown()
+      if (gateFirstSuccessOnly && n > 1) return
       releaseSuccess.await(20, TimeUnit.SECONDS)
     }
 
@@ -142,6 +168,7 @@ class RtmpConnectStopRaceTest {
 
     override fun onDisconnect() {
       disconnects.incrementAndGet()
+      onDisconnectHook?.invoke()
       if (gateDisconnect) {
         disconnectEntered.countDown()
         releaseDisconnect.await(20, TimeUnit.SECONDS)
@@ -210,20 +237,20 @@ class RtmpConnectStopRaceTest {
       await("onDisconnect entered", checker.disconnectEntered)
       assertFalse("the stop already set isStreaming false", client.isStreaming)
       assertFalse("no sender is running yet", running(client))
-      assertFalse("the connect job was not cancelled yet", connectJob(client)!!.isCancelled)
+      // GPX R65 — the stop cancels the connect job at its very top, so the job is already cancelled
+      // here, where it used to be still live (which is what let it start the sender after the guard).
+      assertTrue("the stop cancelled the connect job first", connectJob(client)!!.isCancelled)
 
-      // The connect job resumes (not cancelled), runs the lines after onConnectionSuccess and starts
-      // the sender.
+      // The connect job resumes from the callback, is found cancelled and never starts the sender.
       checker.releaseSuccess.countDown()
       waitUntil("connect job finished") { connectJob(client)!!.isCompleted }
-      assertTrue("the race was driven: the connect job started the sender after the stop's guard", running(client))
+      assertFalse("the cancelled job did not start the sender", running(client))
 
       // Let the stop finish. The stop's last step replaces its scope, after the tail sender stop, so
       // a new scope means the stop is over. The job field is cleared before that tail stop.
       checker.releaseDisconnect.countDown()
       waitUntil("stop finished") { field(client, "scope") !== scopeAtStop }
 
-      // The connect job did run on to start(): the stop must stop that sender too.
       assertFalse("sender left running after the stop finished", running(client))
       assertFalse(client.isStreaming)
 
@@ -265,6 +292,277 @@ class RtmpConnectStopRaceTest {
       assertFalse("sender must not be running", running(client))
       assertFalse(client.isStreaming)
       assertEquals(emptyList<String>(), checker.failures.toList())
+    } finally {
+      stopLeakedSender(client)
+    }
+  }
+
+  private fun assertStreaming(client: RtmpClient, checker: GatedChecker) {
+    waitUntil("sender running") { running(client) }
+    assertTrue("isStreaming", client.isStreaming)
+    assertEquals(emptyList<String>(), checker.failures.toList())
+  }
+
+  /**
+   * GPX R65 — a `connect()` that lands inside a stop is deferred: the client remembers it and runs it
+   * after the teardown, through the normal connect path, so it streams. The first connect job, held
+   * inside `onConnectionSuccess`, is cancelled by the stop and never starts a sender, and the socket
+   * field ends up holding only the second connection's socket.
+   */
+  @Test
+  fun `a connect during a stop is deferred and then streams`() {
+    val checker = GatedChecker().apply { gateDisconnect = true }
+    val client = RtmpClient(checker)
+    try {
+      client.connect(ingest!!.url)
+      await("onConnectionSuccess entered", checker.successEntered)
+      val firstSocket = field(client, "socket")
+
+      client.disconnect()
+      await("onDisconnect entered", checker.disconnectEntered)
+      assertFalse("the stop already set isStreaming false", client.isStreaming)
+
+      client.connect(ingest!!.url)
+      assertFalse("a deferred connect is not streaming yet", client.isStreaming)
+      assertEquals("a deferred connect has not started", 1, checker.startedUrls.size)
+
+      checker.releaseSuccess.countDown()
+      checker.releaseDisconnect.countDown()
+      waitUntil("the deferred connect started") { checker.startedUrls.size == 2 }
+      assertStreaming(client, checker)
+      assertEquals("the stop raised onDisconnect once", 1, checker.disconnects.get())
+      assertTrue("the second connection has its own socket", field(client, "socket") !== firstSocket)
+
+      checker.gateDisconnect = false
+      client.disconnect()
+      waitUntil("second stop finished") { checker.disconnects.get() == 2 && !client.isStreaming }
+      assertFalse(running(client))
+    } finally {
+      stopLeakedSender(client)
+    }
+  }
+
+  /** GPX R65 — two connects while stopping: the latest url runs, once. */
+  @Test
+  fun `two connects during a stop run only the latest`() {
+    val checker = GatedChecker().apply {
+      gateDisconnect = true
+      releaseSuccess.countDown()
+    }
+    val client = RtmpClient(checker)
+    try {
+      client.connect(ingest!!.url)
+      waitUntil("running") { running(client) }
+
+      client.disconnect()
+      await("onDisconnect entered", checker.disconnectEntered)
+      client.connect(ingest!!.url + "?n=first")
+      client.connect(ingest!!.url + "?n=latest")
+      checker.releaseDisconnect.countDown()
+
+      waitUntil("the deferred connect started") { checker.startedUrls.size == 2 }
+      assertStreaming(client, checker)
+      Thread.sleep(300)
+      assertEquals(listOf(ingest!!.url, ingest!!.url + "?n=latest"), checker.startedUrls.toList())
+    } finally {
+      stopLeakedSender(client)
+    }
+  }
+
+  /** GPX R65 — a connect deferred by a stop, then a stop: the stop wins, nothing starts. */
+  @Test
+  fun `a deferred connect then a disconnect starts nothing`() {
+    val checker = GatedChecker().apply {
+      gateDisconnect = true
+      releaseSuccess.countDown()
+    }
+    val client = RtmpClient(checker)
+    try {
+      client.connect(ingest!!.url)
+      waitUntil("running") { running(client) }
+
+      client.disconnect()
+      await("onDisconnect entered", checker.disconnectEntered)
+      client.connect(ingest!!.url + "?n=deferred")
+      client.disconnect() // the stop wins: this drops the deferred connect
+      checker.releaseDisconnect.countDown()
+
+      waitUntil("both stops finished") { checker.disconnects.get() == 2 }
+      Thread.sleep(500)
+      assertEquals("the deferred connect was dropped", listOf(ingest!!.url), checker.startedUrls.toList())
+      assertFalse(client.isStreaming)
+      assertFalse(running(client))
+      assertEquals(emptyList<String>(), checker.failures.toList())
+    } finally {
+      stopLeakedSender(client)
+    }
+  }
+
+  /** GPX R65 — the app's pattern: the next connect is started from inside `onDisconnect`. */
+  @Test
+  fun `a connect called from inside onDisconnect runs after the stop`() {
+    val checker = GatedChecker().apply { releaseSuccess.countDown() }
+    val client = RtmpClient(checker)
+    try {
+      checker.onDisconnectHook = {
+        checker.onDisconnectHook = null
+        client.connect(ingest!!.url + "?n=again")
+      }
+      client.connect(ingest!!.url)
+      waitUntil("running") { running(client) }
+
+      client.disconnect()
+      waitUntil("the connect from onDisconnect started") { checker.startedUrls.size == 2 }
+      assertStreaming(client, checker)
+      assertEquals(ingest!!.url + "?n=again", checker.startedUrls[1])
+      assertEquals(1, checker.disconnects.get())
+    } finally {
+      stopLeakedSender(client)
+    }
+  }
+
+  /** GPX R65 — `disconnect()` then `connect()` back to back on one thread, no gate: it streams. */
+  @Test
+  fun `a stop followed at once by a start streams`() {
+    val checker = GatedChecker().apply { releaseSuccess.countDown() }
+    val client = RtmpClient(checker)
+    try {
+      client.connect(ingest!!.url)
+      waitUntil("running") { running(client) }
+
+      client.disconnect()
+      client.connect(ingest!!.url + "?n=next")
+
+      waitUntil("the second connect started") { checker.startedUrls.size == 2 }
+      assertStreaming(client, checker)
+      assertEquals(1, checker.disconnects.get())
+    } finally {
+      stopLeakedSender(client)
+    }
+  }
+
+  /**
+   * GPX R65 — a connect job stuck longer than the stop's capped wait does not hang the stop, and when
+   * it wakes it writes nothing: the connect that follows keeps streaming.
+   */
+  @Test
+  fun `a connect job that outlives the stop writes nothing`() {
+    val checker = GatedChecker().apply { gateFirstSuccessOnly = true }
+    val client = RtmpClient(checker)
+    try {
+      client.connect(ingest!!.url)
+      await("onConnectionSuccess entered", checker.successEntered) // held, and stays held
+
+      val started = System.currentTimeMillis()
+      client.disconnect()
+      client.connect(ingest!!.url + "?n=next")
+      waitUntil("the connect after the stop started", 20_000) { checker.startedUrls.size == 2 }
+      assertTrue("the stop was not held for the stuck job", System.currentTimeMillis() - started < 10_000)
+      assertStreaming(client, checker)
+
+      checker.releaseSuccess.countDown()
+      Thread.sleep(500)
+      assertStreaming(client, checker)
+      assertEquals(1, checker.disconnects.get())
+    } finally {
+      checker.releaseSuccess.countDown()
+      stopLeakedSender(client)
+    }
+  }
+
+  /** GPX R65 — a second `disconnect()` waits for the first teardown: only one runs at a time. */
+  @Test
+  fun `two disconnects do not interleave`() {
+    val checker = GatedChecker().apply {
+      gateDisconnect = true
+      releaseSuccess.countDown()
+    }
+    val client = RtmpClient(checker)
+    try {
+      client.connect(ingest!!.url)
+      waitUntil("running") { running(client) }
+
+      client.disconnect()
+      await("first onDisconnect entered", checker.disconnectEntered)
+      client.disconnect()
+      Thread.sleep(500)
+      assertEquals("the second teardown waits for the first", 1, checker.disconnects.get())
+
+      checker.releaseDisconnect.countDown()
+      waitUntil("both teardowns finished") { checker.disconnects.get() == 2 }
+      Thread.sleep(200)
+      assertFalse(client.isStreaming)
+      assertFalse(running(client))
+      assertEquals(emptyList<String>(), checker.failures.toList())
+    } finally {
+      stopLeakedSender(client)
+    }
+  }
+
+  /** GPX R65 — the retry path: `reConnect` stops, waits, then connects again with the same callbacks. */
+  @Test
+  fun `a retry stops and connects again`() {
+    val checker = GatedChecker().apply { releaseSuccess.countDown() }
+    val client = RtmpClient(checker)
+    try {
+      client.connect(ingest!!.url)
+      waitUntil("running") { running(client) }
+
+      client.reConnect(200)
+      waitUntil("the retry connect started") { checker.startedUrls.size == 2 }
+      assertStreaming(client, checker)
+      assertEquals("a retry's teardown raises no onDisconnect", 0, checker.disconnects.get())
+    } finally {
+      stopLeakedSender(client)
+    }
+  }
+
+  /** GPX R65 — a user stop during a retry's wait between its stop and its connect: nothing connects. */
+  @Test
+  fun `a user stop during a retry backoff cancels the retry connect`() {
+    val checker = GatedChecker().apply { releaseSuccess.countDown() }
+    val client = RtmpClient(checker)
+    try {
+      client.connect(ingest!!.url)
+      waitUntil("running") { running(client) }
+
+      client.reConnect(1_500)
+      waitUntil("the retry's teardown stopped the sender") { !running(client) }
+      client.disconnect()
+      waitUntil("the stop finished") { checker.disconnects.get() == 1 }
+      Thread.sleep(2_000)
+
+      assertEquals("the retry connect never ran", 1, checker.startedUrls.size)
+      assertFalse(client.isStreaming)
+      assertFalse(running(client))
+      assertEquals(emptyList<String>(), checker.failures.toList())
+    } finally {
+      stopLeakedSender(client)
+    }
+  }
+
+  /** GPX R65 — `reConnect` arriving while a user stop runs does nothing. */
+  @Test
+  fun `a retry that arrives during a stop does not start`() {
+    val checker = GatedChecker().apply {
+      gateDisconnect = true
+      releaseSuccess.countDown()
+    }
+    val client = RtmpClient(checker)
+    try {
+      client.connect(ingest!!.url)
+      waitUntil("running") { running(client) }
+
+      client.disconnect()
+      await("onDisconnect entered", checker.disconnectEntered)
+      client.reConnect(100)
+      checker.releaseDisconnect.countDown()
+      waitUntil("stop finished") { !client.isStreaming && field(client, "job") == null }
+      Thread.sleep(800)
+
+      assertEquals(1, checker.startedUrls.size)
+      assertFalse(client.isStreaming)
+      assertFalse(running(client))
     } finally {
       stopLeakedSender(client)
     }
