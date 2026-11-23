@@ -600,6 +600,13 @@ class RtmpClient(private val connectChecker: ConnectChecker) {
     }
     job?.cancelAndJoin()
     job = null
+    // GPX R64 — stop the sender again, now that the connect job is gone, whether or not it was
+    // running when the guard above read it. The connect job is cancelled only here, and it can run
+    // on to rtmpSender.start() after that guard, which leaves a sender on a closed socket that no
+    // later stop reaches (fork plan, R64). BaseSender.stop() is safe on a sender that never
+    // started, and on one the guard already stopped. Not cleared: the guard already applied [clear] to
+    // a sender it stopped, and a client that was never streaming keeps the stream info the caller set.
+    rtmpSender.stop(false, unlockNeeded = { socket?.close() })
     scope.cancel()
     scope = CoroutineScope(Dispatchers.IO)
     publishPermitted = false
