@@ -435,6 +435,14 @@ class SrtClient(private val connectChecker: ConnectChecker) {
     packetsLostUnique = 0
     job?.cancelAndJoin()
     job = null
+    // GPX R63 — stop the sender again, now that the connect job is gone, whether or not it was
+    // running when the guard above read it. The connect job is cancelled only here, and it can run
+    // on to srtSender.start() after that guard, which leaves a sender on a closed socket that no
+    // later stop reaches (fork plan, R63). BaseSender.stop() is safe on a sender that never
+    // started, and on one the guard already stopped. Not cleared: the guard already applied [clear] to
+    // a sender it stopped, and a client that was never streaming keeps the stream info and the
+    // Mpeg2TsService the caller set.
+    srtSender.stop(false)
     scope.cancel()
     scope = CoroutineScope(Dispatchers.IO)
   }

@@ -175,7 +175,20 @@ class WhipConnectStopRaceTest {
     val disconnects = AtomicInteger(0)
     val failures = CopyOnWriteArrayList<String>()
 
-    override fun onConnectionStarted(url: String) {}
+    // GPX R65 — holds the second connect job inside `onConnectionStarted`, so that job is still in
+    // flight while the stop runs (see the overlapping-connect test).
+    val startedCount = AtomicInteger(0)
+    val secondStartedEntered = CountDownLatch(1)
+    val releaseSecondStarted = CountDownLatch(1)
+    @Volatile var gateSecondStarted = false
+
+    override fun onConnectionStarted(url: String) {
+      if (startedCount.incrementAndGet() == 2 && gateSecondStarted) {
+        secondStartedEntered.countDown()
+        releaseSecondStarted.await(20, TimeUnit.SECONDS)
+      }
+    }
+
     override fun onConnectionSuccess() {
       successEntered.countDown()
       releaseSuccess.await(20, TimeUnit.SECONDS)
@@ -323,6 +336,69 @@ class WhipConnectStopRaceTest {
       assertFalse("sender must not be running", running(client))
       assertFalse(client.isStreaming)
       assertEquals(emptyList<String>(), checker.failures.toList())
+    } finally {
+      stopLeakedSender(client)
+    }
+  }
+
+  /**
+   * GPX R65 — DOCUMENTS A DEFECT; the fix is not in this change (design: fork plan, R65). A `connect()`
+   * that lands inside a stop, after `disconnect(true)` has set `isStreaming` false and before it joins
+   * the connect job, is taken as a fresh connect: it launches a second connect job and overwrites the
+   * `job` field. The stop then (1) cancels and joins only the second job, so it finishes while the
+   * first job is still running, and (2) leaves `isStreaming` true with no connect job and nothing
+   * reported, so the next `connect()` is ignored until a `disconnect()`.
+   *
+   * The assertions say what happens today. When the defect is fixed they flip: the first job is
+   * finished when the stop returns, and `isStreaming` matches what is running.
+   *
+   * Not shown here: the first job starting a sender after the stop. The stop's last step cancels the
+   * scope, and a job that returns from `onConnectionSuccess` after that is cancelled before
+   * `whipSender.start()`, so only a job that is on the CPU between the stop's second sender stop and
+   * its scope cancel could start one, which no gate can place.
+   */
+  @Test
+  fun `a connect during a stop leaves isStreaming true and does not await the first job`() {
+    val checker = GatedChecker().apply {
+      gateDisconnect = true
+      gateSecondStarted = true
+    }
+    val client = client(checker)
+    try {
+      client.connect(ingest!!.url)
+      await("onConnectionSuccess entered", checker.successEntered)
+      val firstJob = connectJob(client)!!
+
+      client.disconnect()
+      await("onDisconnect entered", checker.disconnectEntered)
+      assertFalse("the stop already set isStreaming false", client.isStreaming)
+
+      // The overlapping connect: the guard `!isStreaming` lets it in and it overwrites `job`.
+      client.connect(ingest!!.url)
+      await("second connect job entered onConnectionStarted", checker.secondStartedEntered)
+      val secondJob = connectJob(client)!!
+      assertTrue("the second connect replaced the job field", secondJob !== firstJob)
+      assertTrue(client.isStreaming)
+
+      // The stop resumes and cancels the job it finds in the field: the second one.
+      checker.releaseDisconnect.countDown()
+      waitUntil("stop cancelled the second job") { secondJob.isCancelled }
+      checker.releaseSecondStarted.countDown()
+      waitUntil("stop finished") { connectJob(client) == null }
+
+      assertFalse("DEFECT: the stop finished while the first connect job was still running", firstJob.isCompleted)
+      assertTrue("DEFECT: isStreaming is true after the stop, with no connect job", client.isStreaming)
+      assertEquals("the cancelled second connect reported nothing", emptyList<String>(), checker.failures.toList())
+
+      // Because isStreaming is stuck true, a new connect() is ignored.
+      client.connect(ingest!!.url)
+      Thread.sleep(300)
+      assertEquals("DEFECT: the new connect() was ignored", 2, checker.startedCount.get())
+
+      // The first job, cancelled by the stop's scope cancel, ends without starting a sender.
+      checker.releaseSuccess.countDown()
+      waitUntil("first job finished") { firstJob.isCompleted }
+      assertFalse(running(client))
     } finally {
       stopLeakedSender(client)
     }
