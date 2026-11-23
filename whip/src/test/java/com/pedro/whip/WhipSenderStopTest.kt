@@ -36,6 +36,7 @@ import org.junit.Test
 import org.mockito.kotlin.any
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.never
+import org.mockito.kotlin.timeout
 import org.mockito.kotlin.verify
 import java.io.IOException
 import java.nio.ByteBuffer
@@ -121,16 +122,7 @@ class WhipSenderStopTest {
     val sender = startSenderWritingOn(socket)
 
     socket.failNow(IOException("Network is unreachable"))
-    withTimeout(5_000) {
-      while (true) {
-        try {
-          verify(checker).onConnectionFailed("Error send packet, Network is unreachable")
-          break
-        } catch (_: AssertionError) {
-          delay(20)
-        }
-      }
-    }
+    verify(checker, timeout(5_000)).onConnectionFailed("Error send packet, Network is unreachable")
     sender.stop()
 
     // the stop that follows the fault adds no second report
