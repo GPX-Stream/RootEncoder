@@ -1021,12 +1021,28 @@ abstract class StreamBase(
     }
   }
 
+  /**
+   * GPX R66 — a video encoder output that is codec configuration and no picture. It goes to neither a
+   * sender nor the record controller: it carries no frame time, so it can come out stamped 0 in the
+   * middle of a stream or a file, as when an encoder restarts itself under a running sender. The
+   * parameter sets it holds reach both another way, through onVideoInfo and the negotiated format. A
+   * keyframe that carries the flag too is a picture.
+   *
+   * Filtered here and not in VideoEncoder, whose other user, BufferVideoSource, hands every output to
+   * a decoder that is given no parameter sets any other way.
+   */
+  private fun isCodecConfigOnly(info: MediaCodec.BufferInfo): Boolean =
+    info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0 &&
+      info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME == 0
+
   private val getVideoData: GetVideoData = object : GetVideoData {
     override fun onVideoInfo(sps: ByteBuffer, pps: ByteBuffer?, vps: ByteBuffer?) {
       onVideoInfoImp(sps.duplicate(), pps?.duplicate(), vps?.duplicate())
     }
 
     override fun getVideoData(videoBuffer: ByteBuffer, info: MediaCodec.BufferInfo) {
+      // GPX R66 — see isCodecConfigOnly.
+      if (isCodecConfigOnly(info)) return
       fpsListener.calculateFps()
       // GPX R32 — frame-timing observation; isolated so a listener fault cannot break encoding.
       if (info.size > 0 && info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0) {
@@ -1075,6 +1091,8 @@ abstract class StreamBase(
     }
 
     override fun getVideoData(videoBuffer: ByteBuffer, info: MediaCodec.BufferInfo) {
+      // GPX R66 — see isCodecConfigOnly.
+      if (isCodecConfigOnly(info)) return
       recordController.recordVideo(videoBuffer, info)
     }
 

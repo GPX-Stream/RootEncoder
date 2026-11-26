@@ -1338,17 +1338,27 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       the origin's age, so a surface fed on another clock that fell inside it would be offset from the
       audio; this consumer's frames come from the GL path, stamped on `TimeUtils`' clock. The margin
       is `SHARED_CLOCK_MARGIN_US`, upstream's 1 s.
-      **Open, not changed: the codec-config buffer.** `checkBuffer` does not filter
-      `BUFFER_FLAG_CODEC_CONFIG`. Read from code: if a sender is running when it comes out, WHIP and
-      RTSP packetize its parameter sets and SRT writes it as a PES, with the buffer's own timestamp,
-      and RTMP stamps its sequence header with the first buffer it is given; an encoder that gives it
-      no frame time would make that 0. Whether a sender is running by then is not shown. A sender
-      takes nothing until its connect succeeds, and the encoders start as the connect begins, so on a
-      start or a reconnect it is a matter of which comes first. The scoped stream re-prepare runs
-      with the stream stopped. The encoder's own crash recovery restarts it on air, but does not
-      attach its new input surface, so no output from it is shown either. The MPEG-TS recorder drops
-      the buffer before a file's first keyframe. A change to drop it was approved only if it could be
-      shown to reach a sender or recorder, so none is made.
+      **The codec-config buffer (a fault that was there before R66; approved by Andy 2026-11-25).**
+      With or without an origin, `StreamBase` now sends a video buffer that is codec configuration
+      and not a keyframe to neither a sender nor the record controller (`isCodecConfigOnly`).
+      **How it reached them.** `VideoEncoder.checkBuffer` does not filter
+      `BUFFER_FLAG_CODEC_CONFIG`, and nothing after it did. The encoder's own crash recovery
+      (`BaseEncoder.reloadCodec` to `reset()` to `restart()`) restarts it while a sender and a
+      recording run. The restart keeps the rebase reference and clears the monotonic check, so a
+      config buffer the codec stamps 0 rebases to 0 and passes: WHIP and RTSP packetize its
+      parameter sets, SRT writes it as a PES, and the MPEG-TS recorder writes it into a file that has
+      its first keyframe, at time 0. RTMP stamps a sequence header with it only where that header has
+      not been sent. On a start or a reconnect it also reaches a sender that connected before it came
+      out. Not observed: what the device's codec emits after such a restart, which does not attach
+      the new input surface to the graphics.
+      **Nothing StreamBase feeds relies on it**, read from code. The RTMP, SRT, WHIP, RTSP and UDP
+      packetizers take the parameter sets from `onVideoInfo`, which `formatChanged` and
+      `checkBuffer`'s own extraction call before this filter. The MPEG-TS and FLV record controllers
+      read them from `setVideoFormat` or from a keyframe. The MP4 and WebM ones add their video track
+      from the negotiated format. The AAC one takes no video.
+      **Why not in `VideoEncoder`.** `BufferVideoSource` hands every encoder output to a decoder that
+      is given no parameter sets any other way, so there the buffer may be needed. It and the legacy
+      `Camera*Base`, `DisplayBase` and `FromFileBase` paths are unchanged.
       **Not carried.** A new origin, which for a consumer that takes one per process means after a
       process restart.
       **Recordings.** `AsyncBaseRecordController` counts each file from the first frame it is given,
@@ -1370,7 +1380,9 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       without the constructor (new test dependency of `library`: mockito-kotlin, already used by
       `rtmp`), and fails when `startSources` takes "now" again. `VideoEncoderTimestampOriginTest`
       drives the real `VideoEncoder.checkBuffer` with Surface input, with and without an origin; before
-      the video change, its late-output case gave 0 for an hour after the origin. Large values, tests only: `LargeTimestampTest` (RTMP chunk headers
+      the video change, its late-output case gave 0 for an hour after the origin.
+      `StreamBaseCodecConfigTest` runs `StreamBase`'s two video callbacks; before the filter, its two
+      config-buffer cases failed. Large values, tests only: `LargeTimestampTest` (RTMP chunk headers
       either side of the extended field and at 72 h; this module's reader keeps no media body, so
       the body is checked from the bytes), `RtpTimestampWrapTest` (both wraps, 72 h, and a sender
       report past the wrap) and `PesTimestampWrapTest` (the 33-bit wrap and 72 h). They show what the
