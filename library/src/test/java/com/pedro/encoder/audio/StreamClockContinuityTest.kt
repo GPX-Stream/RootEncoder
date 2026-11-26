@@ -15,7 +15,8 @@ import java.nio.ByteBuffer
  *
  * In this package for [AudioEncoder.calculatePts], so the timestamps compared are the encoder's own
  * arithmetic on the value [StreamClock] hands it. That startStream hands the encoders that value is
- * StreamBaseTimestampOriginTest's. The video encoder's own rebase is not run by either.
+ * StreamBaseTimestampOriginTest's, and the video encoder's own rebase is
+ * VideoEncoderTimestampOriginTest's.
  */
 class StreamClockContinuityTest {
 

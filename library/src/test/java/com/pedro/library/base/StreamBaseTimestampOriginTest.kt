@@ -102,6 +102,21 @@ class StreamBaseTimestampOriginTest {
   }
 
   @Test
+  fun `both video encoders are told whether an origin is held`() {
+    val stream = newStream()
+    nowMs = ORIGIN_MS
+
+    stream.setTimestampOrigin(ORIGIN_MS * 1_000)
+    stream.setTimestampOrigin(0)
+
+    listOf(video, recordVideo).forEach { encoder ->
+      val order = Mockito.inOrder(encoder)
+      order.verify(encoder).setTimestampOriginHeld(true)
+      order.verify(encoder).setTimestampOriginHeld(false)
+    }
+  }
+
+  @Test
   fun `with no origin, each start gives the encoders its own time`() {
     val stream = newStream()
 

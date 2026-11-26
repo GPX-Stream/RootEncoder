@@ -1324,8 +1324,27 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       **Change.** `startSources` takes its start timestamp from `StreamClock`: the origin when one is
       set, otherwise now. One value reaches the stream video, record video and audio encoders. The
       caller holds it, so a new `StreamBase` given the same value carries on, which is what R9's
-      `forceContinuousTs` cannot do (its baseline lives in the encoder object). No encoder, sender or
-      record controller changed. R9's flag stays and nothing in `StreamBase` calls it.
+      `forceContinuousTs` cannot do (its baseline lives in the encoder object). No sender or record
+      controller changed. R9's flag stays and nothing in `StreamBase` calls it.
+      **Video encoder (approved by Andy 2026-11-25 as part of R66).** `setTimestampOrigin` also tells
+      both video encoders an origin is held (`VideoEncoder.setTimestampOriginHeld`). Two things follow;
+      with no origin, neither changes.
+      (1) **The rebase.** `rebaseSurfacePts` (R31) took a surface stamp as on the shared clock only
+      within 1 s of now, and otherwise counted from that frame. With an origin, a first output more
+      than 1 s late then started the video at zero while the audio counted from the origin, apart by
+      the origin's age, on the stream and in a recording (one start value is subtracted from both
+      tracks). With an origin held, a stamp from 1 s before the origin to 1 s after now is on the
+      shared clock. A stamp outside that still counts from its first frame. The window is as wide as
+      the origin's age, so a surface fed on another clock that fell inside it would be offset from the
+      audio; this consumer's frames come from the GL path, stamped on `TimeUtils`' clock.
+      (2) **The codec-config buffer.** `checkBuffer` passed it on, and read from code, nothing between
+      it and the senders filtered it: WHIP (and RTSP) packetize its parameter sets as RTP packets and
+      SRT as a PES, both with the buffer's own timestamp, and RTMP stamps its sequence header with the
+      first buffer it is given. An encoder gives that buffer no frame time, so it rebased to 0. The MPEG-TS
+      recorder drops it before a file's first keyframe. With an origin held it is now not sent on,
+      after the parameter sets have been read from it where `formatChanged` did not report them; a
+      buffer that also carries the keyframe flag is kept. Whether the consumer's device stamps it 0
+      was not observed.
       **Not carried.** A new origin, which for a consumer that takes one per process means after a
       process restart.
       **Recordings.** `AsyncBaseRecordController` counts each file from the first frame it is given,
@@ -1334,26 +1353,25 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       code, not run against a receiver: RTMP writes the extended field from `0xffffff` ms (about
       4.66 h), on every chunk type; RTP keeps the low 32 bits (about 13.3 h at 90 kHz, 24.9 h at
       48 kHz) in both the packets and the sender reports; MPEG-TS PTS is taken modulo 2^33 (about
-      26.5 h; the PCR was already on the raw device clock). **Open:** RTMP `Video.kt` and `Audio.kt`
-      narrow the millisecond value with `toInt()`, which goes negative at about 24.8 days;
-      `RtmpHeader.writeHeader` then writes no extended field and the value on the wire is wrong.
-      Before R66 that needed one stream that long. Not changed here: it is outside this approval.
-      **Open, made worse by R66: the video rebase.** `VideoEncoder.rebaseSurfacePts` (R31) counts from
-      the origin only when the first output after an encoder start arrives within 1 s of its frame's
-      stamp; otherwise it counts from that frame. With an origin set, video then starts near zero while
-      audio counts from the origin, so they are apart by the origin's age, on the stream and in a
-      recording (one start value is subtracted from both tracks). Not changed: outside this approval.
-      **Open: codec config.** `VideoEncoder.checkBuffer` does not filter `BUFFER_FLAG_CODEC_CONFIG`.
-      A config buffer stamped 0 by the encoder would come out of the rebase as 0, ahead of media that
-      counts from the origin. Whether the consumer's device does this is not checked.
+      26.5 h; the PCR was already on the raw device clock).
+      **Accepted limit (Andy, 2026-11-25: nothing would run for 25 continuous days).** RTMP
+      `Video.kt` and `Audio.kt` narrow the millisecond value with `toInt()`, which goes negative at
+      about 24.8 days of origin age; `RtmpHeader.writeHeader` then writes no extended field and the
+      value on the wire is wrong. No fork edit is made for it.
       **Caller's rule.** The origin is set before the first start and not raised afterwards, and is
       not stored across a reboot (the KDoc of `setTimestampOrigin`).
       **Tests.** `StreamClockContinuityTest` runs the clock and the real `AudioEncoder.calculatePts`;
       against a clock that ignores the origin, 3 of its 5 tests failed. `StreamBaseTimestampOriginTest`
       runs the real `startStream` and `stopStream` with no recording, on a Mockito instance built
       without the constructor (new test dependency of `library`: mockito-kotlin, already used by
-      `rtmp`), and fails when `startSources` takes "now" again. The video encoder's rebase is not
-      run. Not bench-verified.
+      `rtmp`), and fails when `startSources` takes "now" again. `VideoEncoderTimestampOriginTest`
+      drives the real `VideoEncoder.checkBuffer` with Surface input, with and without an origin; before
+      the video change, its late-output case gave 0 for an hour after the origin, and its two
+      config-buffer cases failed. Large values, tests only: `LargeTimestampTest` (RTMP chunk headers
+      either side of the extended field and at 72 h; this module's reader keeps no media body, so
+      the body is checked from the bytes), `RtpTimestampWrapTest` (both wraps, 72 h, and a sender
+      report past the wrap) and `PesTimestampWrapTest` (the 33-bit wrap and 72 h). They show what the
+      code writes, not what a receiver does with it. Not bench-verified.
       Markers: `git grep -n "GPX R66"`.
 
 ## Correction to R14's scope

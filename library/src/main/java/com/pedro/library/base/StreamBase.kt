@@ -678,6 +678,9 @@ abstract class StreamBase(
    */
   fun setTimestampOrigin(originUs: Long) {
     streamClock.setOrigin(originUs, TimeUtils.getCurrentTimeMicro())
+    // After setOrigin, so a refused origin changes nothing.
+    videoEncoder.setTimestampOriginHeld(originUs > 0)
+    videoEncoderRecord.setTimestampOriginHeld(originUs > 0)
   }
 
   /**
