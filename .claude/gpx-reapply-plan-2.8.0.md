@@ -1315,6 +1315,88 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       is replaced, is what closes it, and the back-to-back test exercises the path.
       Markers: `git grep -n "GPX R65"`.
 
+- [x] R66 — a caller-held stream timestamp origin (`StreamBase.setTimestampOrigin`)
+      (`gpxstream-app` issue #1169; fork change approved by Andy 2026-11-25, for this issue)
+      **What a viewer may see.** With no recording running, `stopStream` stops the encoders, and the
+      next start counted timestamps from itself, so they began again near zero after a reconnect or a
+      stop and start. A restream packager can read that as a jump backwards. Whether it causes the
+      looping the consumer saw through Cloudflare is not established.
+      **Change.** `startSources` takes its start timestamp from `StreamClock`: the origin when one is
+      set, otherwise now. One value reaches the stream video, record video and audio encoders. The
+      caller holds it, so a new `StreamBase` given the same value carries on, which is what R9's
+      `forceContinuousTs` cannot do (its baseline lives in the encoder object). No sender or record
+      controller changed. R9's flag stays and nothing in `StreamBase` calls it.
+      **Video encoder (approved by Andy 2026-11-25 as part of R66).** `setTimestampOrigin` also tells
+      both video encoders an origin is held (`VideoEncoder.setTimestampOriginHeld`). With no origin
+      the rebase is unchanged.
+      **The rebase.** `rebaseSurfacePts` (R31) took a surface stamp as on the shared clock only
+      within 1 s of now, and otherwise counted from that frame. With an origin, a first output more
+      than 1 s late then started the video at zero while the audio counted from the origin, apart by
+      the origin's age, on the stream and in a recording (one start value is subtracted from both
+      tracks). With an origin held, a stamp from 1 s before the origin to 1 s after now is on the
+      shared clock. A stamp outside that still counts from its first frame. The window is as wide as
+      the origin's age, so a surface fed on another clock that fell inside it would be offset from the
+      audio; this consumer's frames come from the GL path, stamped on `TimeUtils`' clock. The margin
+      is `SHARED_CLOCK_MARGIN_US`, upstream's 1 s.
+      **The codec-config buffer (a fault that was there before R66; approved by Andy 2026-11-25).**
+      With or without an origin, `StreamBase` now sends a video buffer that is codec configuration
+      and not a keyframe to neither a sender nor the record controller (`isCodecConfigOnly`).
+      **How it reached them.** `VideoEncoder.checkBuffer` does not filter
+      `BUFFER_FLAG_CODEC_CONFIG`, and nothing after it did. The encoder's own crash recovery
+      (`BaseEncoder.reloadCodec` to `reset()` to `restart()`) restarts it while a sender and a
+      recording run. The restart keeps the rebase reference and clears the monotonic check, so a
+      config buffer the codec stamps 0 rebases to 0 and passes: WHIP and RTSP packetize its
+      parameter sets, SRT writes it as a PES, and the MPEG-TS recorder writes it into a file that has
+      its first keyframe, at time 0. RTMP stamps a sequence header with it only where that header has
+      not been sent. On a start or a reconnect it also reaches a sender that connected before it came
+      out. Not observed: what the device's codec emits after such a restart, which does not attach
+      the new input surface to the graphics.
+      **Nothing StreamBase feeds relies on it**, read from code. The RTMP, SRT, WHIP, RTSP and UDP
+      packetizers take the parameter sets from `onVideoInfo`, which `formatChanged` and
+      `checkBuffer`'s own extraction call before this filter. The MPEG-TS and FLV record controllers
+      read them from `setVideoFormat` or from a keyframe. The MP4 and WebM ones add their video track
+      from the negotiated format. The AAC one takes no video.
+      **Why not in `VideoEncoder`.** `BufferVideoSource` hands every encoder output to a decoder that
+      is given no parameter sets any other way, so there the buffer may be needed. It and the legacy
+      `Camera*Base`, `DisplayBase` and `FromFileBase` paths are unchanged.
+      **Not carried.** A new origin, which for a consumer that takes one per process means after a
+      process restart.
+      **Recordings.** `AsyncBaseRecordController` counts each file from the first frame it is given,
+      so a file still starts at zero.
+      **Large timestamps.** A timestamp is the time since the origin, off-air time included. Read in
+      code, not run against a receiver: RTMP writes the extended field from `0xffffff` ms (about
+      4.66 h), on every chunk type; RTP keeps the low 32 bits (about 13.3 h at 90 kHz, 24.9 h at
+      48 kHz) in both the packets and the sender reports; MPEG-TS PTS is taken modulo 2^33 (about
+      26.5 h; the PCR was already on the raw device clock).
+      **Accepted limit (Andy, 2026-11-25: nothing would run for 25 continuous days).** RTMP
+      `Video.kt` and `Audio.kt` narrow the millisecond value with `toInt()`, which goes negative at
+      about 24.8 days of origin age; `RtmpHeader.writeHeader` then writes no extended field and the
+      value on the wire is wrong. No fork edit is made for it.
+      **Caller's rule.** The origin is set before the first start and not raised afterwards, and is
+      not stored across a reboot (the KDoc of `setTimestampOrigin`).
+      **Tests.** `StreamClockContinuityTest` runs the clock and the real `AudioEncoder.calculatePts`;
+      against a clock that ignores the origin, 3 of its 5 tests failed. `StreamBaseTimestampOriginTest`
+      runs the real `startStream` and `stopStream` with no recording, on a Mockito instance built
+      without the constructor (new test dependency of `library`: mockito-kotlin, already used by
+      `rtmp`), and fails when `startSources` takes "now" again. `VideoEncoderTimestampOriginTest`
+      drives the real `VideoEncoder.checkBuffer` with Surface input, with and without an origin; before
+      the video change, its late-output case gave 0 for an hour after the origin.
+      `StreamBaseCodecConfigTest` runs `StreamBase`'s two video callbacks; before the filter, its two
+      config-buffer cases failed. Interruptions, tests only, each seen to fail with its behaviour
+      broken unless said: a reconnect with a recording rolling starts no encoder again
+      (`StreamBaseTimestampOriginTest`, not broken to check); the two scoped re-prepares stop with
+      `stop(false)` (same file; the stream one broken); a restart's `stop(false)` and `start(false)`
+      keep the video and audio start timestamp (`VideoEncoderTimestampOriginTest`,
+      `AudioRestartStreamClockTest`; `restart()` itself needs a real MediaCodec); the drawn frame's
+      stamp stays within the drift bound of the clock and does not go back over a camera on another
+      time base or forced draws (`GlTimestampStreamClockTest`); a muted microphone's frames are
+      stamped on the clock (`MutedFrameStreamClockTest`, not broken to check). Large values, tests only: `LargeTimestampTest` (RTMP chunk headers
+      either side of the extended field and at 72 h; this module's reader keeps no media body, so
+      the body is checked from the bytes), `RtpTimestampWrapTest` (both wraps, 72 h, and a sender
+      report past the wrap) and `PesTimestampWrapTest` (the 33-bit wrap and 72 h). They show what the
+      code writes, not what a receiver does with it. Not bench-verified.
+      Markers: `git grep -n "GPX R66"`.
+
 ## Correction to R14's scope
 
 The original item list described R14 from the old branch's commit titles, which overstated

@@ -67,6 +67,12 @@ public class VideoEncoder extends BaseEncoder implements GetCameraData {
   private int rotation = 90;
   private int iFrameInterval = 2;
   private long firstTimestamp = 0;
+  // GPX R66 — see setTimestampOriginHeld. Volatile: set by the caller, read on the codec thread.
+  private volatile boolean timestampOriginHeld = false;
+  // GPX R66 — how far outside its window a surface stamp may fall and still be taken for the shared
+  // clock. Upstream's 1 s (rebaseSurfacePts), there to tell that clock from a media time base, which
+  // is far from it. It covers the GL stamp's own drift, held to 100 ms (GlTimestamp).
+  private static final long SHARED_CLOCK_MARGIN_US = 1_000_000;
   // GPX R32 — unre-based Surface/EGL timestamp for the output currently being delivered.
   // Surface timestamps share Android's elapsed-realtime clock domain. -1 for buffer
   // inputs, whose codec PTS is not guaranteed to be an absolute elapsed-realtime timestamp.
@@ -427,6 +433,15 @@ public class VideoEncoder extends BaseEncoder implements GetCameraData {
     this.tryForceVBRBitrateMode = tryForceVBRBitrateMode;
   }
 
+  /**
+   * GPX R66 — true when the start timestamp is a caller-held origin, which can be far older than the
+   * start. It widens which surface stamps are on the shared clock ({@code rebaseSurfacePts}). False,
+   * the default, leaves that as upstream has it.
+   */
+  public void setTimestampOriginHeld(boolean held) {
+    this.timestampOriginHeld = held;
+  }
+
   public Surface getInputSurface() {
     return inputSurface;
   }
@@ -639,7 +654,13 @@ public class VideoEncoder extends BaseEncoder implements GetCameraData {
    */
   private long rebaseSurfacePts(long pts) {
     if (firstTimestamp == 0) {
-      boolean sharedClock = presentTimeUs > 0 && Math.abs(pts - TimeUtils.getCurrentTimeMicro()) < 1_000_000;
+      long now = TimeUtils.getCurrentTimeMicro();
+      // GPX R66 — with a held origin, a frame stamped between the origin and now is on the shared
+      // clock however late its output is. Counted from its own frame instead, the video would start
+      // at zero while the audio counts from the origin. Without one, within 1 s of now, as upstream.
+      long earliest = timestampOriginHeld ? presentTimeUs : now;
+      boolean sharedClock = presentTimeUs > 0
+          && pts > earliest - SHARED_CLOCK_MARGIN_US && pts < now + SHARED_CLOCK_MARGIN_US;
       firstTimestamp = sharedClock ? presentTimeUs : pts;
     }
     return Math.max(0, pts - firstTimestamp);

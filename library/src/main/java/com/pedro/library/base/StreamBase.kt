@@ -82,6 +82,8 @@ import kotlin.math.max
  * - **R28** — the scoped per-encoder re-prepare ([applyVideoStreamConfig],
  *   [applyVideoRecConfig]): rebuild one video encoder while the other encoder and the muxer
  *   keep running (gpxstream-app S8 gate, F2).
+ * - **R66** — a caller-held timestamp origin ([setTimestampOrigin]), so the stream timestamps carry
+ *   on across a stop and start and into a new instance.
  * - **GPX patch** — a `sourcesRunning` flag making `startSources`/`stopSources` idempotent and
  *   transactional, and an `isOnPreview` ordering fix in `startPreview`. The same lifecycle paths sit
  *   under R30's mutual exclusion and R45's serialized GL and video-source start.
@@ -110,6 +112,8 @@ abstract class StreamBase(
   //video/audio record
   private var recordController: RecordController = AndroidMuxerRecordController()
   private val fpsListener = FpsListener()
+  // GPX R66 — see setTimestampOrigin.
+  private val streamClock = StreamClock()
   private var lastVideoFormat: MediaFormat? = null
   private var lastAudioFormat: MediaFormat? = null
 
@@ -651,6 +655,40 @@ abstract class StreamBase(
   }
 
   /**
+   * GPX R66 — count the encoded timestamps from [originUs] instead of from each start, so they keep
+   * rising across a stop and start, such as a reconnect, with no recording running. Give a new
+   * StreamBase the same value and its timestamps carry on from the one it replaces. One value goes to
+   * the stream video, record video and audio encoders, so they keep one time base. A recording still
+   * starts at zero, because the record controller counts from the first frame it is given.
+   *
+   * A timestamp is then the time since the origin, off-air time included, and not the length of this
+   * stream. What each protocol does when that grows large is in the R66 record.
+   *
+   * With an origin, each video encoder also counts a surface frame from it however late its output
+   * is: any surface stamp between 1 s before the origin and 1 s after now is taken to be on the
+   * [TimeUtils] clock ([VideoEncoder.setTimestampOriginHeld]). A surface fed on another clock whose
+   * stamps fall there would be offset from the audio.
+   *
+   * Set it before this instance's first start of the stream or a recording, and do not raise it
+   * afterwards, on this instance or on one that replaces it: a later origin makes later timestamps
+   * smaller than ones already sent. A value set while the sources run takes effect at their next
+   * start. 0, the default, counts from each start.
+   *
+   * The clock restarts at a reboot, so do not store an origin and use it again: one from before a
+   * reboot can be later than now, which is refused, and one that happens not to be is still wrong.
+   * A caller must not let the refusal end its process.
+   *
+   * @param originUs a [TimeUtils.getCurrentTimeMicro] reading from this boot, or 0.
+   * @throws IllegalArgumentException if it is negative or later than now.
+   */
+  fun setTimestampOrigin(originUs: Long) {
+    streamClock.setOrigin(originUs, TimeUtils.getCurrentTimeMicro())
+    // After setOrigin, so a refused origin changes nothing.
+    videoEncoder.setTimestampOriginHeld(originUs > 0)
+    videoEncoderRecord.setTimestampOriginHeld(originUs > 0)
+  }
+
+  /**
    * Set a callback to know errors related with Video/Audio encoders
    * @param encoderErrorCallback callback to use, null to remove
    */
@@ -868,7 +906,8 @@ abstract class StreamBase(
       if (!glInterface.isRunning) glInterface.start()
       startVideoSourceIfNeeded()
       audioSource.start(getMicrophoneData)
-      val startTs = TimeUtils.getCurrentTimeMicro()
+      // GPX R66 — the origin when one is set, otherwise now.
+      val startTs = streamClock.startTimestampUs(TimeUtils.getCurrentTimeMicro())
       videoEncoder.start(startTs)
       if (differentRecordResolution) videoEncoderRecord.start(startTs)
       audioEncoder.start(startTs)
@@ -982,12 +1021,28 @@ abstract class StreamBase(
     }
   }
 
+  /**
+   * GPX R66 — a video encoder output that is codec configuration and no picture. It goes to neither a
+   * sender nor the record controller: it carries no frame time, so it can come out stamped 0 in the
+   * middle of a stream or a file, as when an encoder restarts itself under a running sender. The
+   * parameter sets it holds reach both another way, through onVideoInfo and the negotiated format. A
+   * keyframe that carries the flag too is a picture.
+   *
+   * Filtered here and not in VideoEncoder, whose other user, BufferVideoSource, hands every output to
+   * a decoder that is given no parameter sets any other way.
+   */
+  private fun isCodecConfigOnly(info: MediaCodec.BufferInfo): Boolean =
+    info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0 &&
+      info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME == 0
+
   private val getVideoData: GetVideoData = object : GetVideoData {
     override fun onVideoInfo(sps: ByteBuffer, pps: ByteBuffer?, vps: ByteBuffer?) {
       onVideoInfoImp(sps.duplicate(), pps?.duplicate(), vps?.duplicate())
     }
 
     override fun getVideoData(videoBuffer: ByteBuffer, info: MediaCodec.BufferInfo) {
+      // GPX R66 — see isCodecConfigOnly.
+      if (isCodecConfigOnly(info)) return
       fpsListener.calculateFps()
       // GPX R32 — frame-timing observation; isolated so a listener fault cannot break encoding.
       if (info.size > 0 && info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0) {
@@ -1036,6 +1091,8 @@ abstract class StreamBase(
     }
 
     override fun getVideoData(videoBuffer: ByteBuffer, info: MediaCodec.BufferInfo) {
+      // GPX R66 — see isCodecConfigOnly.
+      if (isCodecConfigOnly(info)) return
       recordController.recordVideo(videoBuffer, info)
     }
 
