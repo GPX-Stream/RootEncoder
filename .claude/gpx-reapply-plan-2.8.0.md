@@ -1315,6 +1315,38 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       is replaced, is what closes it, and the back-to-back test exercises the path.
       Markers: `git grep -n "GPX R65"`.
 
+- [x] R66 — a caller-held stream timestamp origin (`StreamBase.setTimestampOrigin`)
+      (`gpxstream-app` issue #1169; fork change approved by Andy 2026-11-25, for this issue)
+      **What a viewer may see.** With no recording running, `stopStream` stops the encoders, and the
+      next start counted timestamps from itself, so they began again near zero after a reconnect or a
+      stop and start. A restream packager can read that as a jump backwards. Whether it causes the
+      looping the consumer saw through Cloudflare is not established.
+      **Change.** `startSources` takes its start timestamp from `StreamClock`: the origin when one is
+      set, otherwise now. One value reaches the stream video, record video and audio encoders. The
+      caller holds it, so a new `StreamBase` given the same value carries on, which is what R9's
+      `forceContinuousTs` cannot do (its baseline lives in the encoder object). No encoder, sender or
+      record controller changed. R9's flag stays and nothing in `StreamBase` calls it.
+      **Not carried.** A new origin, which for a consumer that takes one per process means after a
+      process restart.
+      **Recordings.** `AsyncBaseRecordController` counts each file from the first frame it is given,
+      so a file still starts at zero.
+      **Large timestamps.** A timestamp is the time since the origin, off-air time included. Read in
+      code, not run against a receiver: RTMP writes the extended field from `0xffffff` ms (about
+      4.66 h), on every chunk type; RTP keeps the low 32 bits (about 13.3 h at 90 kHz, 24.9 h at
+      48 kHz) in both the packets and the sender reports; MPEG-TS PTS is taken modulo 2^33 (about
+      26.5 h; the PCR was already on the raw device clock). **Open:** RTMP `Video.kt` and `Audio.kt`
+      narrow the millisecond value with `toInt()`, which goes negative at about 24.8 days;
+      `RtmpHeader.writeHeader` then writes no extended field and the value on the wire is wrong.
+      Before R66 that needed one stream that long. Not changed here: it is outside this approval.
+      **Video rebase.** `VideoEncoder.rebaseSurfacePts` (R31) counts from the origin only when the
+      first output after an encoder start arrives within 1 s of its frame's stamp; otherwise it counts
+      from that frame. Not changed.
+      **Tests.** `StreamClockContinuityTest` runs the clock and the real `AudioEncoder.calculatePts`.
+      `StreamBase` cannot be built on the plain JVM, so the line in `startSources` that reads the
+      clock, and the video encoder, are not run. Against a clock that ignores the origin, 3 of the 5
+      tests failed. Not bench-verified.
+      Markers: `git grep -n "GPX R66"`.
+
 ## Correction to R14's scope
 
 The original item list described R14 from the old branch's commit titles, which overstated

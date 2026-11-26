@@ -82,6 +82,8 @@ import kotlin.math.max
  * - **R28** — the scoped per-encoder re-prepare ([applyVideoStreamConfig],
  *   [applyVideoRecConfig]): rebuild one video encoder while the other encoder and the muxer
  *   keep running (gpxstream-app S8 gate, F2).
+ * - **R66** — a caller-held timestamp origin ([setTimestampOrigin]), so the stream timestamps carry
+ *   on across a stop and start and into a new instance.
  * - **GPX patch** — a `sourcesRunning` flag making `startSources`/`stopSources` idempotent and
  *   transactional, and an `isOnPreview` ordering fix in `startPreview`. The same lifecycle paths sit
  *   under R30's mutual exclusion and R45's serialized GL and video-source start.
@@ -110,6 +112,8 @@ abstract class StreamBase(
   //video/audio record
   private var recordController: RecordController = AndroidMuxerRecordController()
   private val fpsListener = FpsListener()
+  // GPX R66 — see setTimestampOrigin.
+  private val streamClock = StreamClock()
   private var lastVideoFormat: MediaFormat? = null
   private var lastAudioFormat: MediaFormat? = null
 
@@ -651,6 +655,26 @@ abstract class StreamBase(
   }
 
   /**
+   * GPX R66 — count the encoded timestamps from [originUs] instead of from each start, so they keep
+   * rising across a stop and start, such as a reconnect, with no recording running. Give a new
+   * StreamBase the same value and its timestamps carry on from the one it replaces. One value goes to
+   * the stream video, record video and audio encoders, so they keep one time base. A recording still
+   * starts at zero, because the record controller counts from the first frame it is given.
+   *
+   * A timestamp is then the time since the origin, off-air time included, and not the length of this
+   * stream. What each protocol does when that grows large is in the R66 record.
+   *
+   * A value set while the sources run takes effect at their next start. 0, the default, counts from
+   * each start.
+   *
+   * @param originUs a [TimeUtils.getCurrentTimeMicro] reading, or 0.
+   * @throws IllegalArgumentException if it is negative or later than now.
+   */
+  fun setTimestampOrigin(originUs: Long) {
+    streamClock.setOrigin(originUs, TimeUtils.getCurrentTimeMicro())
+  }
+
+  /**
    * Set a callback to know errors related with Video/Audio encoders
    * @param encoderErrorCallback callback to use, null to remove
    */
@@ -868,7 +892,8 @@ abstract class StreamBase(
       if (!glInterface.isRunning) glInterface.start()
       startVideoSourceIfNeeded()
       audioSource.start(getMicrophoneData)
-      val startTs = TimeUtils.getCurrentTimeMicro()
+      // GPX R66 — the origin when one is set, otherwise now.
+      val startTs = streamClock.startTimestampUs(TimeUtils.getCurrentTimeMicro())
       videoEncoder.start(startTs)
       if (differentRecordResolution) videoEncoderRecord.start(startTs)
       audioEncoder.start(startTs)
