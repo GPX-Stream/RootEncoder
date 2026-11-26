@@ -1382,7 +1382,15 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       drives the real `VideoEncoder.checkBuffer` with Surface input, with and without an origin; before
       the video change, its late-output case gave 0 for an hour after the origin.
       `StreamBaseCodecConfigTest` runs `StreamBase`'s two video callbacks; before the filter, its two
-      config-buffer cases failed. Large values, tests only: `LargeTimestampTest` (RTMP chunk headers
+      config-buffer cases failed. Interruptions, tests only, each seen to fail with its behaviour
+      broken unless said: a reconnect with a recording rolling starts no encoder again
+      (`StreamBaseTimestampOriginTest`, not broken to check); the two scoped re-prepares stop with
+      `stop(false)` (same file; the stream one broken); a restart's `stop(false)` and `start(false)`
+      keep the video and audio start timestamp (`VideoEncoderTimestampOriginTest`,
+      `AudioRestartStreamClockTest`; `restart()` itself needs a real MediaCodec); the drawn frame's
+      stamp stays within the drift bound of the clock and does not go back over a camera on another
+      time base or forced draws (`GlTimestampStreamClockTest`); a muted microphone's frames are
+      stamped on the clock (`MutedFrameStreamClockTest`, not broken to check). Large values, tests only: `LargeTimestampTest` (RTMP chunk headers
       either side of the extended field and at 72 h; this module's reader keeps no media body, so
       the body is checked from the bytes), `RtpTimestampWrapTest` (both wraps, 72 h, and a sender
       report past the wrap) and `PesTimestampWrapTest` (the 33-bit wrap and 72 h). They show what the

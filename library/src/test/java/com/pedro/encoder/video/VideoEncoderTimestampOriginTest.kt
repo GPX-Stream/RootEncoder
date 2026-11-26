@@ -130,6 +130,27 @@ class VideoEncoderTimestampOriginTest {
     assertEquals(HOUR, frame.timestampUs)
   }
 
+  @Test
+  fun `a restart that keeps the baseline carries on from the origin`() {
+    startedFrom(ORIGIN_US, originHeld = true)
+    val before = ORIGIN_US + HOUR
+    assertEquals(HOUR, output(stampUs = before, atUs = before + 20_000).timestampUs)
+
+    // What the crash recovery (reset) and the scoped re-prepare do around the codec: stop(false), then
+    // restart(), whose first step is start(false). restart() itself needs a real MediaCodec.
+    encoder.stop(false)
+    encoder.start(false)
+    // The start timestamp is kept in its own right: the rebase reference alone also carries the output
+    // across, until the next start that resets it.
+    val startTs = BaseEncoder::class.java.getDeclaredField("presentTimeUs").apply { isAccessible = true }
+    assertEquals(ORIGIN_US, startTs.getLong(encoder))
+    set(VideoEncoder::class.java, "formatVideoEncoder", FormatVideoEncoder.SURFACE)
+    set(VideoEncoder::class.java, "spsPpsSetted", true)
+
+    val after = before + 5_000_000
+    assertEquals(HOUR + 5_000_000, output(stampUs = after, atUs = after + 20_000).timestampUs)
+  }
+
   private companion object {
     const val ORIGIN_US = 3_600_000_000L
     const val HOUR = 3_600_000_000L

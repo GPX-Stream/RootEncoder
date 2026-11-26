@@ -117,6 +117,53 @@ class StreamBaseTimestampOriginTest {
   }
 
   @Test
+  fun `with a recording rolling, a reconnect starts no encoder again`() {
+    val recorder = mock<RecordController>()
+    val stream = newStream().also { it.set("recordController", recorder) }
+    nowMs = ORIGIN_MS
+    stream.setTimestampOrigin(ORIGIN_MS * 1_000)
+    whenever(recorder.isRunning()).thenReturn(true)
+
+    startAndStop(stream, ORIGIN_MS + 5_000)
+    startAndStop(stream, ORIGIN_MS + 90_000)
+
+    listOf(video, recordVideo, audio).forEach { encoder ->
+      assertEquals(listOf(ORIGIN_MS * 1_000), startsOf(encoder))
+    }
+    Mockito.verify(video, Mockito.never()).stop()
+    Mockito.verify(audio, Mockito.never()).stop()
+  }
+
+  @Test
+  fun `a scoped re-prepare of either video encoder keeps its baseline`() {
+    val stream = newStream()
+    // The sources are up, held by a recording, and the stream is stopped.
+    stream.set("sourcesRunning", true)
+    whenever(video.width).thenReturn(1_280)
+    whenever(video.height).thenReturn(720)
+    whenever(recordVideo.width).thenReturn(1_280)
+    whenever(recordVideo.height).thenReturn(720)
+    // The prepare answers are the mocks' default or set here; the stop that precedes them is the point.
+    whenever(
+      video.prepareVideoEncoder(
+        Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt(),
+        Mockito.anyInt(), org.mockito.kotlin.any(), Mockito.anyInt(), Mockito.anyInt(),
+      ),
+    ).thenReturn(true)
+
+    stream.applyVideoStreamConfig(1_920, 1_080, 4_000_000)
+    stream.applyVideoRecConfig(1_920, 1_080, 6_000_000, forceRecordVbr = true)
+
+    listOf(video, recordVideo).forEach { encoder ->
+      Mockito.verify(encoder).stop(false)
+      Mockito.verify(encoder, Mockito.never()).stop()
+      Mockito.verify(encoder, Mockito.never()).start(Mockito.anyLong())
+    }
+    // The stream encoder, whose prepare answered true, is restarted in place and not started anew.
+    Mockito.verify(video).restart()
+  }
+
+  @Test
   fun `with no origin, each start gives the encoders its own time`() {
     val stream = newStream()
 
