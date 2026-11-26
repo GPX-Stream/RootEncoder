@@ -1338,9 +1338,14 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       narrow the millisecond value with `toInt()`, which goes negative at about 24.8 days;
       `RtmpHeader.writeHeader` then writes no extended field and the value on the wire is wrong.
       Before R66 that needed one stream that long. Not changed here: it is outside this approval.
-      **Video rebase.** `VideoEncoder.rebaseSurfacePts` (R31) counts from the origin only when the
-      first output after an encoder start arrives within 1 s of its frame's stamp; otherwise it counts
-      from that frame. Not changed.
+      **Open, made worse by R66: the video rebase.** `VideoEncoder.rebaseSurfacePts` (R31) counts from
+      the origin only when the first output after an encoder start arrives within 1 s of its frame's
+      stamp; otherwise it counts from that frame. With an origin set, video then starts near zero while
+      audio counts from the origin, so they are apart by the origin's age, on the stream and in a
+      recording (one start value is subtracted from both tracks). Not changed: outside this approval.
+      **Open: codec config.** `VideoEncoder.checkBuffer` does not filter `BUFFER_FLAG_CODEC_CONFIG`.
+      A config buffer stamped 0 by the encoder would come out of the rebase as 0, ahead of media that
+      counts from the origin. Whether the consumer's device does this is not checked.
       **Tests.** `StreamClockContinuityTest` runs the clock and the real `AudioEncoder.calculatePts`.
       `StreamBase` cannot be built on the plain JVM, so the line in `startSources` that reads the
       clock, and the video encoder, are not run. Against a clock that ignores the origin, 3 of the 5
