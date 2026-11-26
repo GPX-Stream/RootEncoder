@@ -664,6 +664,11 @@ abstract class StreamBase(
    * A timestamp is then the time since the origin, off-air time included, and not the length of this
    * stream. What each protocol does when that grows large is in the R66 record.
    *
+   * With an origin, each video encoder also counts a surface frame from it however late its output
+   * is: any surface stamp between 1 s before the origin and 1 s after now is taken to be on the
+   * [TimeUtils] clock ([VideoEncoder.setTimestampOriginHeld]). A surface fed on another clock whose
+   * stamps fall there would be offset from the audio.
+   *
    * Set it before this instance's first start of the stream or a recording, and do not raise it
    * afterwards, on this instance or on one that replaces it: a later origin makes later timestamps
    * smaller than ones already sent. A value set while the sources run takes effect at their next

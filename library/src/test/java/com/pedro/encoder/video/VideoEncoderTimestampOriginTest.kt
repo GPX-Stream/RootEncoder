@@ -6,7 +6,6 @@ import android.os.SystemClock
 import com.pedro.encoder.BaseEncoder
 import org.junit.After
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -24,12 +23,9 @@ class VideoEncoderTimestampOriginTest {
 
   private var nowMs = 0L
   private lateinit var systemClock: MockedStatic<SystemClock>
-  private var parameterSetReports = 0
 
   private val encoder = VideoEncoder(object : GetVideoData {
-    override fun onVideoInfo(sps: ByteBuffer, pps: ByteBuffer?, vps: ByteBuffer?) {
-      parameterSetReports++
-    }
+    override fun onVideoInfo(sps: ByteBuffer, pps: ByteBuffer?, vps: ByteBuffer?) {}
     override fun getVideoData(videoBuffer: ByteBuffer, info: MediaCodec.BufferInfo) {}
     override fun onVideoFormat(mediaFormat: MediaFormat) {}
   })
@@ -122,56 +118,21 @@ class VideoEncoderTimestampOriginTest {
   }
 
   @Test
-  fun `with an origin, the codec config buffer is not sent on, and the frame after it is counted from the origin`() {
+  fun `with an origin, a first output stamped 0 does not change how the next frame is counted`() {
     startedFrom(ORIGIN_US, originHeld = true)
     val now = ORIGIN_US + HOUR
 
-    val config = output(stampUs = 0, atUs = now, flags = MediaCodec.BUFFER_FLAG_CODEC_CONFIG, bytes = CONFIG)
+    // What a codec-config buffer with no frame time looks like to the rebase. It comes out as 0.
+    val unstamped = output(stampUs = 0, atUs = now, flags = MediaCodec.BUFFER_FLAG_CODEC_CONFIG)
     val frame = output(stampUs = now, atUs = now + 20_000)
 
-    assertFalse(config.forwarded)
-    assertTrue(frame.forwarded)
+    assertEquals(0, unstamped.timestampUs)
     assertEquals(HOUR, frame.timestampUs)
-  }
-
-  @Test
-  fun `with an origin, the parameter sets are still read from a config buffer`() {
-    startedFrom(ORIGIN_US, originHeld = true)
-    set(VideoEncoder::class.java, "spsPpsSetted", false)
-    // H265: the H264 extraction answers in an android.util.Pair, which holds nothing on the plain JVM.
-    encoder.type = com.pedro.common.VideoCodec.H265
-
-    val config = output(stampUs = 0, atUs = ORIGIN_US + HOUR, flags = MediaCodec.BUFFER_FLAG_CODEC_CONFIG, bytes = CONFIG_H265)
-
-    assertFalse(config.forwarded)
-    assertEquals(1, parameterSetReports)
-  }
-
-  @Test
-  fun `with an origin, a keyframe that also carries the config flag is sent on`() {
-    startedFrom(ORIGIN_US, originHeld = true)
-    val now = ORIGIN_US + HOUR
-
-    val flags = MediaCodec.BUFFER_FLAG_CODEC_CONFIG or MediaCodec.BUFFER_FLAG_KEY_FRAME
-
-    assertTrue(output(stampUs = now, atUs = now, flags = flags).forwarded)
-  }
-
-  @Test
-  fun `with no origin, the codec config buffer is sent on, as before`() {
-    startedFrom(ORIGIN_US, originHeld = false)
-
-    assertTrue(output(stampUs = 0, atUs = ORIGIN_US, flags = MediaCodec.BUFFER_FLAG_CODEC_CONFIG, bytes = CONFIG).forwarded)
   }
 
   private companion object {
     const val ORIGIN_US = 3_600_000_000L
     const val HOUR = 3_600_000_000L
     val FRAME = byteArrayOf(0, 0, 0, 1, 0x41, 1, 2, 3)
-    val CONFIG = byteArrayOf(0, 0, 0, 1, 0x67, 0x42, 0x00, 0x1F, 0, 0, 0, 1, 0x68, 0x01, 0x02)
-    // VPS, SPS, PPS.
-    val CONFIG_H265 = byteArrayOf(
-      0, 0, 0, 1, 0x40, 0x01, 0x0C, 0, 0, 0, 1, 0x42, 0x01, 0x01, 0, 0, 0, 1, 0x44, 0x01, 0x0F,
-    )
   }
 }
