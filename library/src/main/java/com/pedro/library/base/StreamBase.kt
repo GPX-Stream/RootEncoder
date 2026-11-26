@@ -664,10 +664,16 @@ abstract class StreamBase(
    * A timestamp is then the time since the origin, off-air time included, and not the length of this
    * stream. What each protocol does when that grows large is in the R66 record.
    *
-   * A value set while the sources run takes effect at their next start. 0, the default, counts from
-   * each start.
+   * Set it before this instance's first start of the stream or a recording, and do not raise it
+   * afterwards, on this instance or on one that replaces it: a later origin makes later timestamps
+   * smaller than ones already sent. A value set while the sources run takes effect at their next
+   * start. 0, the default, counts from each start.
    *
-   * @param originUs a [TimeUtils.getCurrentTimeMicro] reading, or 0.
+   * The clock restarts at a reboot, so do not store an origin and use it again: one from before a
+   * reboot can be later than now, which is refused, and one that happens not to be is still wrong.
+   * A caller must not let the refusal end its process.
+   *
+   * @param originUs a [TimeUtils.getCurrentTimeMicro] reading from this boot, or 0.
    * @throws IllegalArgumentException if it is negative or later than now.
    */
   fun setTimestampOrigin(originUs: Long) {

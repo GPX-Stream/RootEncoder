@@ -14,9 +14,8 @@ import java.nio.ByteBuffer
  * GPX R66 — the stream timestamp across two starts with no recording running.
  *
  * In this package for [AudioEncoder.calculatePts], so the timestamps compared are the encoder's own
- * arithmetic on the value [StreamClock] hands it. StreamBase cannot be built on the plain JVM (see
- * TransportConstructionTest), so the one line in startSources that reads the clock is not run here.
- * The video encoder is not run either: its rebase reads the Android clock.
+ * arithmetic on the value [StreamClock] hands it. That startStream hands the encoders that value is
+ * StreamBaseTimestampOriginTest's. The video encoder's own rebase is not run by either.
  */
 class StreamClockContinuityTest {
 

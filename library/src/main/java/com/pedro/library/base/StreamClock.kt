@@ -20,5 +20,9 @@ internal class StreamClock {
     this.originUs = originUs
   }
 
-  fun startTimestampUs(nowUs: Long): Long = if (originUs > 0) originUs else nowUs
+  fun startTimestampUs(nowUs: Long): Long {
+    // One read: a setOrigin(0) between two would return 0.
+    val origin = originUs
+    return if (origin > 0) origin else nowUs
+  }
 }

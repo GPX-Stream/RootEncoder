@@ -1346,10 +1346,14 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       **Open: codec config.** `VideoEncoder.checkBuffer` does not filter `BUFFER_FLAG_CODEC_CONFIG`.
       A config buffer stamped 0 by the encoder would come out of the rebase as 0, ahead of media that
       counts from the origin. Whether the consumer's device does this is not checked.
-      **Tests.** `StreamClockContinuityTest` runs the clock and the real `AudioEncoder.calculatePts`.
-      `StreamBase` cannot be built on the plain JVM, so the line in `startSources` that reads the
-      clock, and the video encoder, are not run. Against a clock that ignores the origin, 3 of the 5
-      tests failed. Not bench-verified.
+      **Caller's rule.** The origin is set before the first start and not raised afterwards, and is
+      not stored across a reboot (the KDoc of `setTimestampOrigin`).
+      **Tests.** `StreamClockContinuityTest` runs the clock and the real `AudioEncoder.calculatePts`;
+      against a clock that ignores the origin, 3 of its 5 tests failed. `StreamBaseTimestampOriginTest`
+      runs the real `startStream` and `stopStream` with no recording, on a Mockito instance built
+      without the constructor (new test dependency of `library`: mockito-kotlin, already used by
+      `rtmp`), and fails when `startSources` takes "now" again. The video encoder's rebase is not
+      run. Not bench-verified.
       Markers: `git grep -n "GPX R66"`.
 
 ## Correction to R14's scope
