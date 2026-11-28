@@ -297,14 +297,21 @@ in the app's `docs/runbooks/rootencoder-fork.md` and `gpxstream-app` issue #336.
 
 **R67 (2026-11-28): upstream merge through `5dcb864ca`.**
 `gradlew clean assembleDebug test --continue` on the Windows build machine ran 488 tests: 474
-passed and 14 failed, all in `WhipConnectStopRaceTest`, with `:whip:testDebugUnitTest` the one
-failed task. On the same day the unmerged base `ed1366560` also failed 14 of that class's 15
-tests. On the merge, the failure output shows the client getting no STUN success reply from the
-fake ingest. A rerun on JDK 21 (the others used JDK 17) and one with a temporary local edit
-pointing the ingest at `127.0.0.1` also ended in 14 failures. The cause is not known; the PR that
-added R66 reports a passing build. These failures stop before the DTLS handshake that the class
-runs against its fake ingest, so BouncyCastle 1.86 DTLS was not exercised by it. Not
-bench-verified. The next app pin move should watch, on the bench:
+passed and 14 failed, all in `WhipConnectStopRaceTest`. A manual run of the Android CI workflow on
+Linux (run 46183398321) failed 14 tests of that class too, and so did the unmerged base
+`ed1366560` on the build machine.
+
+**Cause: an R53 fault that predates this merge.** `UdpStreamSocketKtor.readPacket` reports the
+sender as `InetSocketAddress.hostname`, which can be a reverse-resolved name. On the build machine
+it was `ANDY-DESKTOP` where the filter expected `192.168.86.239`. `PeerAddress.isSameHost` does
+not accept a name as the host of an IP peer, so the datagram is dropped. With an uncommitted local
+change that reports the numeric address, the same gate passed: 488 tests, 0 failures, including
+the DTLS handshake tests against a fake ingest on BouncyCastle 1.86. **The change is not in the
+tree.** It is a fork edit that needs its own approval. Inferred, not observed: on a device, a
+media server address that reverse-resolves to a name would stop a WHIP connect on the Ktor
+socket, which is the default.
+
+Not bench-verified. The next app pin move should watch, on the bench:
 
 - a live WHIP connect (the BouncyCastle 1.86 DTLS handshake);
 - a record start and a rollover while streaming;

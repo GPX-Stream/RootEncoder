@@ -1425,9 +1425,10 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       **Marker check.** 436 marker lines before and after. The one inventory difference is the
       reworded first line of R12's reset comment. Every `.kt` and `.java` file that differs from
       `pedro/master` carries a marker.
-      **Verification.** The build gate did not fully pass: 474 of 488 tests passed, and 14
-      `WhipConnectStopRaceTest` tests failed, as they did on the unmerged base `ed1366560`. Details
-      and the bench watch items are in the policy file's "Verification status". Not bench-verified.
+      **Verification.** The build gate did not pass on the committed tree: 474 of 488 tests passed.
+      The 14 `WhipConnectStopRaceTest` failures predate this merge (R53 with the Ktor socket). The
+      cause, the uncommitted experiment that passed 488 of 488 and the bench watch items are in the
+      policy file's "Verification status". Not bench-verified.
 
 ## Correction to R14's scope
 
