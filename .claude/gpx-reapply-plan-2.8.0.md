@@ -1397,6 +1397,26 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       code writes, not what a receiver does with it. Not bench-verified.
       Markers: `git grep -n "GPX R66"`.
 
+- [x] R68 — the Ktor UDP socket reports a datagram's sender as a numeric address (fork edit approved
+      by Andy 2026-11-28)
+      **The bug.** `UdpStreamSocketKtor.readPacket` filled `UdpPacket.host` from Ktor's
+      `InetSocketAddress.hostname`, which can be a reverse-resolved name. R53's
+      `PeerAddress.isSameHost` does not accept a name as the host of an IP peer, so
+      `readFrom(peerHost)` dropped the datagram. On the Windows build machine the host was
+      `ANDY-DESKTOP` where the filter expected `192.168.86.239`, and `WhipConnectStopRaceTest` got
+      no STUN success. Inferred, not observed on a device: a media server address that
+      reverse-resolves to a name would stop a WHIP connect on the Ktor socket, which is the default.
+      **The fix.** The host is the numeric text of the sender's `InetAddress`, through
+      `addressToString()`, which `UdpStreamSocketJava` uses for the same field. R53's filter is
+      unchanged. `getLocalHost` is unchanged.
+      **Tests.** `UdpStreamSocketSenderHostTest` sends a datagram to each UDP socket implementation
+      from a local IPv4 address that resolves to a name. Before the change the Ktor case failed
+      (`expected:<[192.168.86.239]> but was:<[ANDY-DESKTOP]>`) and the Java case passed. On a machine
+      with no such address both cases are skipped. `gradlew clean assembleDebug test --continue` on
+      the Windows build machine passed: 475 tests, 0 failures, 0 skipped. Not bench-verified. For the
+      bench: a WHIP publish to the Millicast ingest.
+      Markers: `git grep -n "GPX R68"`.
+
 ## Correction to R14's scope
 
 The original item list described R14 from the old branch's commit titles, which overstated

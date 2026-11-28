@@ -1,5 +1,6 @@
 package com.pedro.common.socket.ktor
 
+import com.pedro.common.addressToString
 import com.pedro.common.socket.base.UdpPacket
 import com.pedro.common.socket.base.UdpStreamSocket
 import com.pedro.common.socket.base.UdpType
@@ -12,6 +13,7 @@ import io.ktor.network.sockets.DatagramReadWriteChannel
 import io.ktor.network.sockets.InetSocketAddress
 import io.ktor.network.sockets.aSocket
 import io.ktor.network.sockets.isClosed
+import io.ktor.network.sockets.toJavaAddress
 import io.ktor.utils.io.core.remaining
 import kotlinx.coroutines.Dispatchers
 import kotlinx.io.Buffer
@@ -96,7 +98,11 @@ class UdpStreamSocketKtor(
         val length = datagram.packet.remaining.toInt()
         val data = datagram.packet.readByteArray()
         val address = datagram.address as? InetSocketAddress
-        return UdpPacket(data, length, address?.hostname?.substringBefore("%"), address?.port)
+        // GPX R68 — the sender is reported as a numeric address, as UdpStreamSocketJava reports it.
+        // Ktor's hostname can be a reverse-resolved name, which the WHIP source filter (R53) cannot
+        // match to the remote candidate's IP.
+        val senderIp = (address?.toJavaAddress() as? java.net.InetSocketAddress)?.address?.addressToString()
+        return UdpPacket(data, length, senderIp, address?.port)
     }
 
     override suspend fun setRemoteAddress(host: String, port: Int) {
