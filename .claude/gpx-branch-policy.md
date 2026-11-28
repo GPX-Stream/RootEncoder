@@ -1,24 +1,31 @@
 # GPX fork branch and tag policy
 
-This fork carries one active GPX line, `gpx-2.8`. It previously carried a second,
-`gpx-master`, retired 2026-09-12 when its only consumer, `gpxnative-ai`, was retired — see
-"Retired lines" below.
+This fork carries one active GPX line, `gpx-alpha1`. GPX changes stay in
+`GPX-Stream/RootEncoder`: never push to `pedroSG94/RootEncoder` or open a PR or issue there.
+Treat the `pedro` remote as fetch-only.
 
 ## Branches
 
 | Branch | Base | Purpose |
 |---|---|---|
 | `master` | — | Mirror of `pedroSG94/RootEncoder` master. Fast-forward only, never a GPX commit. |
-| `gpx-alpha1` | upstream `9a9ca124f` (2026-07-30) | Active. The line `gpxstream-app` builds against. It is `gpx-2.8` (R46–R49) merged with `gpx/833-second-camera-rotation` (R50–R51) and upstream `f1bbda7ca` (R52, 2026-10-27). Both of those branches were deleted after the merge; `alpha1` stays a tag on the old R50–R51 tip. |
+| `gpx-alpha1` | upstream `9a9ca124f` (2026-07-30), synced through `5dcb864ca` (R67, 2026-11-28) | Active. The line `gpxstream-app` builds against. It is `gpx-2.8` (R46–R49) merged with `gpx/833-second-camera-rotation` (R50–R51) and upstream `f1bbda7ca` (R52, 2026-10-27). Both of those branches were deleted after the merge; `alpha1` stays a tag on the old R50–R51 tip. |
 
 ## Tags and who consumes them
 
-| Tag line | Head tag | Consumer |
-|---|---|---|
-| `2.8.0-gpx*` | `2.8.0-gpx3` | `gpxstream-app` |
+The consumer, `gpxstream-app`, pins a **full commit SHA** of this branch, not a tag
+(`ed1366560065c3b227d718ed21172a71e898c3b2` on 2026-11-28). The current value is in the app's
+`gradle/libs.versions.toml`, and the pin rules are in its `docs/runbooks/rootencoder-fork.md`.
+That runbook records Andy's ruling that the app pins SHAs until a `beta1` tag is cut, and that no
+`2.8.0-gpx4` is cut.
 
-JitPack builds per tag, so a pin resolves the tagged commit regardless of what any branch
-does afterwards.
+| Tag | What it is |
+|---|---|
+| `alpha1` | `74227e260`, the R50–R51 tip. The app's runbook records it as the build that ran on the bench PDT. |
+| `2.8.0-gpx1` to `2.8.0-gpx3` | Earlier pins of this line. |
+
+JitPack builds each tag and each full SHA, so a pin resolves its commit regardless of what any
+branch does afterwards.
 
 ## Retired lines
 
@@ -34,6 +41,8 @@ does afterwards.
   from `gpxnative-ai`'s own git history (or GitHub's reflog, for a limited window) if that
   exact build is ever needed again.
 - **`2.7.5-gpx*`** (head `2.7.5-gpx25`) — the tag line `gpx-master` fed. No live consumer.
+- **`gpx-2.8`** and **`gpx/833-second-camera-rotation`** — merged into `gpx-alpha1` (R52) and
+  deleted 2026-10-27. Their history is in `gpx-alpha1`.
 
 ## Why the two lines cannot be swapped
 
@@ -65,12 +74,13 @@ checklist entry under that exact id; new work takes the next number. `GPX patch`
 item and were never enumerated separately. A bare `GPX patch` is preferred over guessing a number,
 because a wrong attribution is worse than an absent one.
 
-**Coverage: all 55 code files that differ from the merged upstream head carry at least one
-marker, and a sweep found no changed region without a marker within 14 lines above it** (swept
-2026-10-27 against `pedro/master` @ `f1bbda7ca`, R58; the sweep script compares each diff hunk
-against the marker lines). The baseline is the *merged* upstream head,
-not the branch point: since R26 and R27 brought upstream commits in, a diff against the original
-`9a9ca124f` base also lists files upstream changed, which carry no GPX work and never will. Two
+**Coverage.** On 2026-11-28, against `pedro/master` @ `5dcb864ca` (R67), each of the 74 `.kt` and
+`.java` files that differed from it carried at least one marker:
+`git diff --name-only pedro/master -- "*.kt" "*.java" | xargs grep -L "GPX"` printed nothing. A
+sweep on 2026-10-27, against `f1bbda7ca` (R58), found no changed region without a marker within
+14 lines above it. That sweep was not rerun for R67; a rough substitute gave the same count per
+file before and after the R67 merge. The baseline is the *merged* upstream head, not the branch
+point: a diff against the original `9a9ca124f` base also lists files only upstream changed. Two
 caveats on reading a grep as complete:
 
 - `StreamBase.kt` is a dense grouped rewrite; its class KDoc lists the groups, and each changed
@@ -82,9 +92,9 @@ legible without running it.
 
 ## Rules
 
-- **All GPX work goes on `gpx-2.8`**, tagged `2.8.0-gpx<N>`. Each GPX change needs its own
-  reason and its own approval from the consumer side — "the fork is open anyway" is never one
-  (the gpxstream-app fork-edit rule).
+- **All GPX work goes into `gpx-alpha1`**, through a PR from a branch in its own worktree. Each
+  GPX change needs its own reason and its own approval from the consumer side — "the fork is open
+  anyway" is never one (the gpxstream-app fork-edit rule).
 - **Built as R28 — per-encoder re-prepare (authorized at the gpxstream-app S8 gate, F2, Andy
   2026-08-12; shipped as `2.8.0-gpx2`).** `StreamBase.applyVideoStreamConfig` and
   `StreamBase.applyVideoRecConfig`: a scoped re-prepare that rebuilds one video encoder while
@@ -110,14 +120,14 @@ legible without running it.
   tested JitPack against the *short* commit hash, which JitPack treats as an entirely separate
   cached build from the full 40-character SHA gpxstream-app actually pins — always verify
   against the full SHA.
-- **The next upstream sync** fast-forwards `master`, then branches or rebases the GPX line off
-  it. The procedure and the item-by-item record from the 2.7.5 to 2.8.0 move are in
-  `.claude/gpx-reapply-plan-2.8.0.md`.
+- **Upstream syncs** follow `.claude/skills/upstream-sync/SKILL.md`. A sync PR is merged with a
+  merge commit or a fast-forward, never squashed or rebased, so `pedro/master` stays an ancestor.
+  The item-by-item record is in `.claude/gpx-reapply-plan-2.8.0.md`.
 
-## Verification status of the `2.8.0-gpx*` line
+## Verification status
 
-`gradlew assembleDebug test` passes across every module and the sample app at every tag and at
-the branch head.
+`gradlew assembleDebug test` is recorded as passing across every module and the sample app at
+each `2.8.0-gpx*` tag. For later heads, read the paragraphs below.
 
 **`2.8.0-gpx1` — device-proven over WHIP (2026-08-02).** On a bench PDT-FP1 the WHIP path
 reached `Streaming` against the Millicast ingest and video was watched end to end on the
@@ -133,12 +143,12 @@ recording rolling unbroken, and two H265 encoders allocated concurrently. The it
 provocations R24's bench checklist named for R23/R25/R26/R27 have no recorded pass and stay open
 as watch items — the ordinary paths they sit on have run on the bench since without incident.
 
-**`2.8.0-gpx3` (R29, R30) — shipped and pinned; concurrency coverage is build-verified.** Both
+**`2.8.0-gpx3` (R29, R30) — shipped; concurrency coverage is build-verified.** Both
 changes rode the consumer's #78 bench build. Their specific interleavings (a wedged muxer write,
 a stopRecord racing a stopStream) are not reproducible on a bench, so device proof is of the
-unbroken ordinary paths, not the races. `gpxstream-app`'s pin is `2.8.0-gpx3`.
+unbroken ordinary paths, not the races. The app has since moved to SHA pins (see "Tags and who consumes them").
 
-**Branch head, ahead of `2.8.0-gpx3` and untagged — build-verified only.** It carries R31, the
+**R31–R35, untagged after `2.8.0-gpx3` — build-verified when they landed.** The range carries R31, the
 merge of upstream `pedro/master` @ `300d99fe1` (surface-PTS rebase onto the shared start, the
 GL timestamp rework, a timestamp-based fps limiter — all on the live video path, so the next
 consumer pin move wants a bench watch for A/V sync and frame pacing), R32, the encoded-frame
@@ -148,7 +158,7 @@ swappable network-transport seam (`library/src/main/java/com/pedro/library/trans
 consumer issue #110, so a protocol change no longer forces a full rebuild of the recording path —
 and R34, a synchronized GL-init wait in `GlStreamInterface.start()` (consumer issue #108) so a
 timeout or exception there throws instead of being silently swallowed. Three further
-fork changes ride the same head: R54, `setRecordOverlay` — a
+fork changes rode with them: R54, `setRecordOverlay` — a
 second `StreamOverlayRender` instance drawn into the record encoder target only, giving the
 stream and the recording independent overlay composites; R55, burning that same
 record-target overlay into photo captures too, so a VOD thumbnail always matches the recording it
@@ -281,3 +291,21 @@ elapsed realtime instead of the wall clock, so a clock step cannot fake or hide 
 Full records in `.claude/gpx-reapply-plan-2.8.0.md`. `gradlew clean assembleDebug test` result is in
 the PR. Unit-tested as pure functions only; `SrtClient.connect` and `WhipClient.connect` need a live
 peer and are not exercised off-device. Not bench-verified. No tag cut, no pin move by this change.
+
+**R50–R66.** Per-item records are in `.claude/gpx-reapply-plan-2.8.0.md`. Bench status is tracked
+in the app's `docs/runbooks/rootencoder-fork.md` and `gpxstream-app` issue #336.
+
+**R67 (2026-11-28): upstream merge through `5dcb864ca`.**
+`gradlew clean assembleDebug test --continue` on the Windows build machine ran 488 tests: 474
+passed and 14 failed, all in `WhipConnectStopRaceTest`, with `:whip:testDebugUnitTest` the one
+failed task. On the same day the unmerged base `ed1366560` also failed 14 of that class's 15
+tests. On the merge, the failure output shows the client getting no STUN success reply from the
+fake ingest. A rerun on JDK 21 (the others used JDK 17) and one with a temporary local edit
+pointing the ingest at `127.0.0.1` also ended in 14 failures. The cause is not known; the PR that
+added R66 reports a passing build. These failures stop before the DTLS handshake that the class
+runs against its fake ingest, so BouncyCastle 1.86 DTLS was not exercised by it. Not
+bench-verified. The next app pin move should watch, on the bench:
+
+- a live WHIP connect (the BouncyCastle 1.86 DTLS handshake);
+- a record start and a rollover while streaming;
+- force-render switched on and off across a GL stop and start.

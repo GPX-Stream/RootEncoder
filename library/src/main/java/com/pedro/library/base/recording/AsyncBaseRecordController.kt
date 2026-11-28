@@ -71,6 +71,7 @@ abstract class AsyncBaseRecordController : RecordController {
   @Volatile
   private var startTs: Long = 0
   private val scope = CoroutineScope(Dispatchers.IO)
+  @Volatile
   private var muxerChannel: Channel<MediaFrame>? = null
   private var muxerJob: Job? = null
   private val bufferPool = BufferPool()
@@ -203,6 +204,7 @@ abstract class AsyncBaseRecordController : RecordController {
       stopRecord()
       throw e
     }
+    startMuxerJob()
   }
 
   override fun startRecord(
@@ -217,6 +219,7 @@ abstract class AsyncBaseRecordController : RecordController {
       stopRecord()
       throw e
     }
+    startMuxerJob()
   }
 
   private fun start(
@@ -224,22 +227,10 @@ abstract class AsyncBaseRecordController : RecordController {
     tracks: RecordTracks
   ) {
     clearTimestamp()
-    // GPX R12 — a new recording starts its byte count and rollover latch afresh.
+    // GPX R12 — a new recording starts its byte count and rollover latch afresh. This stays ahead of
+    // startRecordImp: a muxer may count bytes there.
     bytesWritten = 0
     rolloverNotified = false
-    muxerChannel = Channel(CAPACITY)
-    muxerJob = scope.launch {
-      val channel = muxerChannel ?: return@launch
-      for (frame in channel) {
-        try {
-          if (!isActive) break
-          onWriteFrame(frame)
-        } finally {
-          bufferPool.release(frame.data)
-          onFrameRecycled()
-        }
-      }
-    }
     this.tracks = tracks
     this.listener = listener
     recordStatus = RecordController.Status.STARTED
@@ -270,6 +261,22 @@ abstract class AsyncBaseRecordController : RecordController {
     myRequestKeyFrame = null
     listener?.onStatusChange(recordStatus)
     stopRecordImp()
+  }
+
+  private fun startMuxerJob() {
+    val channel = Channel<MediaFrame>(CAPACITY)
+    muxerJob = scope.launch {
+      for (frame in channel) {
+        try {
+          if (!isActive) break
+          onWriteFrame(frame)
+        } finally {
+          bufferPool.release(frame.data)
+          onFrameRecycled()
+        }
+      }
+    }
+    muxerChannel = channel
   }
 
   private fun clearTimestamp() {

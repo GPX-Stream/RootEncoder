@@ -1397,6 +1397,38 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       code writes, not what a receiver does with it. Not bench-verified.
       Markers: `git grep -n "GPX R66"`.
 
+- [x] R67 — merge of upstream `pedro/master` @ `5dcb864ca` (11 non-merge commits past R52's
+      `f1bbda7ca`). Assessment: `.claude/upstream-sync-2026-11-28-analysis.md`.
+      **What arrives.** The record muxer job starts after `startRecordImp`, with AAC, MP4 and WebM
+      muxer fixes (`2a28e943f`); the GL executor is swapped under `sync` and `ForceRenderer` no
+      longer leaves an old loop drawing (`a9d97bf5f`); an `ArrayList` copy for the multi-preview
+      snapshot (`ee323345f`); `UrlParser.getAppName()` keeps empty path segments (`ef72868b3`);
+      `Camera2Source` pause/resume repeating, capture template and request customizer
+      (`259309b77`, `1279e8b80`, merge fix `c37420ae4`); BouncyCastle 1.86, Kotlin 2.4.20,
+      media3-inspector 1.11.1 and version 2.8.2 (`dfaeec875`, `fe7d8bcfa`, `b713d9bc4`,
+      `dffd9570d`).
+      **Conflicts and how each resolved.**
+      - `AsyncBaseRecordController.start`: took upstream, so the muxer job is launched by
+        `startMuxerJob()` after `startRecordImp`. R12's two reset lines stay in `start()`, ahead of
+        `startRecordImp`, where the MPEG-TS muxer counts its PSI bytes.
+      - `GlStreamInterface.stopLocked`: kept R16's shutdown-and-await body under upstream's
+        take-and-null of the executor under `sync`, and dropped the later `this.executor = null`.
+        The R16 comment now says so.
+      **Per-item outcome.** No item retires.
+      | Item | Outcome |
+      |---|---|
+      | R12, R29 | kept; upstream has no byte count or rollover, and its change does not bound the join |
+      | R5, R11, R16, R32, R34, R41, R45, R50, R51, R54, R55, R56 (`GlStreamInterface`) | kept; upstream's `sync` guards frame submit against the executor swap, which neither R45 (serializes start and stop) nor R16 (waits for the release) covers |
+      | R5, R11, R41, R54, R56 (`OpenGlView`) | kept; auto-merged |
+      | R23, R25, R36, R37, R38, R41 (`Camera2ApiManager`) | kept; auto-merged |
+      | every other item | file not touched by upstream's range; unchanged |
+      **Marker check.** 436 marker lines before and after. The one inventory difference is the
+      reworded first line of R12's reset comment. Every `.kt` and `.java` file that differs from
+      `pedro/master` carries a marker.
+      **Verification.** The build gate did not fully pass: 474 of 488 tests passed, and 14
+      `WhipConnectStopRaceTest` tests failed, as they did on the unmerged base `ed1366560`. Details
+      and the bench watch items are in the policy file's "Verification status". Not bench-verified.
+
 ## Correction to R14's scope
 
 The original item list described R14 from the old branch's commit titles, which overstated

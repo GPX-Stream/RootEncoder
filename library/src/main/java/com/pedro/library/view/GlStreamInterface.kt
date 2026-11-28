@@ -372,9 +372,10 @@ class GlStreamInterface(private val context: Context): OnFrameAvailableListener,
     pendingRelease = null
     glTimestamp.reset()
     threadQueue.clear()
-    executor?.shutdownNow()
-    executor = null
-    executor = newSingleThreadExecutor(threadQueue)
+    synchronized(sync) {
+      executor?.shutdownNow()
+      executor = newSingleThreadExecutor(threadQueue)
+    }
     surfaceHandlerThread?.quitSafely()
     surfaceHandlerThread = HandlerThread("GlStreamHandler")
     surfaceHandlerThread?.start()
@@ -436,11 +437,12 @@ class GlStreamInterface(private val context: Context): OnFrameAvailableListener,
     surfaceHandlerThread?.quitSafely()
     surfaceHandlerThread = null
     threadQueue.clear()
-    val executor = this.executor
+    val executor = synchronized(sync) { this.executor.also { this.executor = null } }
     if (executor != null) {
       // GPX R16 — shutdown, not shutdownNow: the submitted release must run rather than be raced
       // against cancellation. submit keeps the Future alive past this bounded wait so start() can
-      // observe whether it completed.
+      // observe whether it completed. Upstream's secureSubmit(100) then shutdownNow here gives the
+      // release 100 ms and then cancels it.
       pendingRelease = executor.submit { releaseSurfaceManagers() }
       executor.shutdown()
       try {
@@ -448,7 +450,6 @@ class GlStreamInterface(private val context: Context): OnFrameAvailableListener,
       } catch (e: InterruptedException) {
         Thread.currentThread().interrupt()
       }
-      this.executor = null
     } else if (pendingRelease == null) {
       // GPX R16 — release() can reach stop() twice; do not race a teardown already tracked.
       releaseSurfaceManagers()
@@ -618,7 +619,7 @@ class GlStreamInterface(private val context: Context): OnFrameAvailableListener,
           surfaceManager.swapBuffer()
         }
       }
-      val previewSnapshot = multiPreviewSurfaceManagers.values.toList()
+      val previewSnapshot = ArrayList(multiPreviewSurfaceManagers.values)
       previewSnapshot.forEach { info ->
         if (info.surfaceManager.isReady) {
           if (info.surfaceManager.makeCurrent()) {
