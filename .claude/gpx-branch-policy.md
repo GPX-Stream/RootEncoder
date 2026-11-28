@@ -281,3 +281,8 @@ elapsed realtime instead of the wall clock, so a clock step cannot fake or hide 
 Full records in `.claude/gpx-reapply-plan-2.8.0.md`. `gradlew clean assembleDebug test` result is in
 the PR. Unit-tested as pure functions only; `SrtClient.connect` and `WhipClient.connect` need a live
 peer and are not exercised off-device. Not bench-verified. No tag cut, no pin move by this change.
+
+**R68 (2026-11-28): the Ktor UDP socket reports a numeric sender address**, so R53's source filter
+no longer depends on reverse DNS. The record, with its build result, is in
+`.claude/gpx-reapply-plan-2.8.0.md`. Not bench-verified; the next app pin move should watch a live
+WHIP connect.
