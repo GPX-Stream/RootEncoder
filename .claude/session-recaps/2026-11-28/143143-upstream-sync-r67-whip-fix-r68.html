@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<script type="text/markdown" id="recap">
+# Upstream sync R67 and the WHIP sender-address fix R68 (2026-11-28, 14:31 local)
+
+## Outcome
+- `gpx-alpha1` is synced with pedroSG94/RootEncoder through `5dcb864ca` and carries R68.
+  Merge commit of the sync: `a901470e3` (GPX-Stream/RootEncoder PR #22). R68: PR #23, `245f0e75e`.
+- `origin/master` was pushed to match `pedro/master`. Nothing was pushed or posted to Pedro.
+- On the sync head `0eb02669c`: Windows `clean assembleDebug test --continue` 490 tests, 0 failures;
+  Linux Android CI run 46186303691 passed.
+- Not run on a device. No tag. The app pin was not moved.
+
+## What happened
+- Andy approved the assessment (take it, no GPX patch retires), asked for the stale `upstream-sync`
+  skill and branch policy to be fixed, and said GPX changes must never go to Pedro.
+- Two code conflicts: `AsyncBaseRecordController.start` and `GlStreamInterface.stopLocked`.
+- 14 `WhipConnectStopRaceTest` tests then failed, on the merge and on the unmerged base.
+  Cause: R53's source filter against `UdpStreamSocketKtor`, which reported the sender as a host
+  name (`ANDY-DESKTOP`). Fixed as R68 with its own approval and PR.
+- The app was pinned to `ed1366560` when checked, which has the R53 fault. That a device would hit
+  it depends on the media server address resolving to a name: inferred, not observed.
+
+## Open
+- App pin move in `gpxstream-app` (Andy's call). Bench watch: live WHIP connect on BouncyCastle
+  1.86; record start and rollover while streaming; force-render across a GL stop and start.
+- Local `master` tracks `pedro/master`. A push block on the `pedro` remote was offered and not
+  set up; Andy did not answer that offer.
+
+## Wrong turns worth knowing
+- Said no unit test ran a DTLS handshake. `WhipConnectStopRaceTest` does.
+- Blamed the 14 failures on this machine's network. Linux failed them too.
+- Tried JDK 21 and a loopback ingest address before logging what the filter received. The loopback
+  run proved nothing: the client drops loopback candidates.
+- A background command ending in `tail` reported exit 0 while Gradle had failed.
+
+## Gotchas
+- `git worktree remove` fails with "Filename too long" after a build; it unregisters the worktree and
+  leaves the folder.
+- The Android CI workflow triggers on `master` only. For a GPX branch, start it by hand with
+  `gh workflow run android.yml --repo GPX-Stream/RootEncoder --ref <branch>`. It runs `./gradlew
+  test` without `--continue`.
+- `UdpStreamSocketSenderHostTest` skips on a machine where no local IPv4 address has a name.
+
+## AI notes (scratch — optional, written by Claude for future sessions)
+- When a network test times out, log what the code under test receives before suspecting the
+  environment.
+- Andy wants a timer for CI waits, sized to the expected run time.
+</script>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Upstream sync R67 and WHIP fix R68 — 2026-11-28 14:31</title>
+<style>
+  :root{--red-500:#EF3340;--red-700:#B3242B;--red-50:#FDECEC;--paper:#FAF8F5;--card:#FFFFFF;
+    --border:#DDD7CF;--border-subtle:#ECE7E0;--fg-1:#181512;--fg-2:#3D3833;--fg-3:#6B645C;
+    --ok:#12B76A;--attn:#F79009;--chip:#F1ECE5;
+    --font-display:"Barlow Condensed","Oswald","Segoe UI Semibold",system-ui,sans-serif;
+    --font-mono:"Roboto Mono",ui-monospace,"Cascadia Code",Consolas,Menlo,monospace;
+    --radius-md:4px;--radius-lg:8px;--shadow:0 1px 2px rgba(11,9,8,.06),0 4px 8px -2px rgba(11,9,8,.06);--maxw:880px;}
+  *{box-sizing:border-box;}html,body{margin:0;padding:0;}
+  body{background:var(--paper);color:var(--fg-2);font-family:var(--font-mono);font-size:15px;line-height:1.6;-webkit-font-smoothing:antialiased;}
+  .wrap{max-width:var(--maxw);margin:0 auto;padding:0 28px 72px;}
+  .topbar{max-width:var(--maxw);margin:0 auto;padding:26px 28px 0;display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;}
+  .logo{display:inline-flex;align-items:center;gap:9px;}
+  .logo .flag{background:var(--red-500);color:#fff;font-family:var(--font-display);font-weight:800;font-size:17px;padding:3px 7px 2px;border-radius:2px;line-height:1;}
+  .logo .word{font-family:var(--font-display);font-weight:700;font-size:17px;letter-spacing:.14em;text-transform:uppercase;color:var(--fg-1);}
+  .doc-meta{font-size:11px;letter-spacing:.13em;text-transform:uppercase;color:var(--fg-3);text-align:right;}
+  .doc-meta .tag{color:var(--red-700);font-weight:700;}
+  .topdivide{max-width:var(--maxw);margin:16px auto 0;padding:0 28px;}.topdivide hr{border:0;border-top:2px solid var(--red-500);margin:0;}
+  .hero{padding:38px 0 4px;}
+  .eyebrow{font-size:11px;font-weight:700;letter-spacing:.26em;text-transform:uppercase;color:var(--red-700);margin:0 0 12px;}
+  h1{font-family:var(--font-display);font-weight:800;font-size:46px;line-height:1.03;text-transform:uppercase;color:var(--fg-1);margin:0 0 14px;}
+  .standfirst{font-size:16px;color:var(--fg-2);max-width:64ch;margin:0;}
+  .stats{display:flex;flex-wrap:wrap;gap:10px;margin-top:22px;}
+  .stat{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-md);padding:9px 15px;box-shadow:var(--shadow);}
+  .stat b{font-family:var(--font-display);font-weight:700;font-size:22px;color:var(--fg-1);display:block;line-height:1;margin-bottom:3px;}
+  .stat span{font-size:10px;letter-spacing:.13em;text-transform:uppercase;color:var(--fg-3);}
+  details{padding-top:34px;border:0;}details+details{border-top:1px solid var(--border-subtle);}
+  summary{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;cursor:pointer;list-style:none;padding-top:6px;}
+  summary::-webkit-details-marker{display:none;}summary .htext{flex:1;}
+  summary .chev{font-family:var(--font-mono);font-weight:700;font-size:20px;line-height:1;color:var(--red-500);margin-top:16px;transition:transform .18s ease;user-select:none;}
+  details[open] summary .chev{transform:rotate(90deg);}summary:hover h2{color:var(--red-700);}
+  .count{font-family:var(--font-mono);font-size:12px;font-weight:700;color:var(--red-700);background:var(--red-50);border-radius:20px;padding:2px 9px;margin-left:10px;vertical-align:middle;}
+  .secbody{padding-top:14px;}
+  .sec-eyebrow{font-size:11px;font-weight:700;letter-spacing:.22em;text-transform:uppercase;color:var(--red-700);margin:0 0 8px;display:flex;align-items:center;gap:10px;}
+  .sec-eyebrow::before{content:"";width:18px;height:2px;background:var(--red-500);display:inline-block;}
+  h2{font-family:var(--font-display);font-weight:700;font-size:27px;line-height:1.1;text-transform:uppercase;color:var(--fg-1);margin:0;transition:color .12s;}
+  h3{font-family:var(--font-mono);font-weight:700;font-size:13.5px;color:var(--fg-1);margin:0 0 6px;}
+  p{margin:0 0 12px;}p:last-child{margin-bottom:0;}strong{color:var(--fg-1);font-weight:700;}
+  code{font-family:var(--font-mono);background:var(--chip);padding:.1em .4em;border-radius:3px;font-size:.86em;color:var(--fg-1);}
+  .cards{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:18px 20px;box-shadow:var(--shadow);}
+  .card .tag{display:inline-flex;align-items:center;gap:8px;font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;margin-bottom:10px;}
+  .dot{width:9px;height:9px;border-radius:50%;display:inline-block;}.dot.ok{background:var(--ok);}.dot.attn{background:var(--attn);}
+  .card p{font-size:13.5px;margin:0;}
+  ul.clean{list-style:none;margin:0;padding:0;display:grid;gap:8px;}
+  ul.clean li{position:relative;padding-left:24px;font-size:13.5px;color:var(--fg-2);}
+  ul.clean li::before{content:"";position:absolute;left:3px;top:8px;width:7px;height:7px;background:var(--red-500);border-radius:1px;transform:rotate(45deg);}
+  ul.clean li strong{color:var(--fg-1);}
+  .check{list-style:none;margin:0;padding:0;display:grid;gap:11px;}
+  .check li{position:relative;padding-left:28px;font-size:13.5px;color:var(--fg-2);}
+  .check li::before{content:"";position:absolute;left:0;top:2px;width:15px;height:15px;border:2px solid var(--attn);border-radius:3px;}
+  .check li strong{color:var(--fg-1);}
+  .nugget{background:var(--card);border:1px solid var(--border);border-left:3px solid var(--red-500);border-radius:var(--radius-md);padding:13px 16px;box-shadow:var(--shadow);}
+  .nugget h3{margin-bottom:5px;}.nugget p{font-size:12.5px;color:var(--fg-2);margin:0;}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+  .resume .secbody{background:var(--fg-1);color:#EDE9E3;border-radius:var(--radius-lg);padding:20px 24px;margin-top:14px;}
+  .resume pre{background:#231e1a;border:1px solid #3a332d;color:#D9D2CA;font-size:12.5px;box-shadow:none;margin:0;}
+  pre{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:13px 16px;overflow-x:auto;font-size:12px;line-height:1.5;color:var(--fg-2);box-shadow:var(--shadow);margin:0 0 6px;}
+  pre code{background:none;padding:0;color:var(--fg-2);}
+  .raw pre{max-height:520px;overflow:auto;font-size:11.5px;white-space:pre-wrap;word-break:break-word;}
+  .raw .hint{font-size:11px;color:var(--fg-3);margin:0 0 8px;}
+  footer{max-width:var(--maxw);margin:48px auto 0;padding:20px 28px 36px;border-top:1px solid var(--border);display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--fg-3);}
+  .controls{max-width:var(--maxw);margin:18px auto 0;padding:0 28px;text-align:right;}
+  .controls button{font-family:var(--font-mono);font-size:10.5px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--fg-3);background:none;border:1px solid var(--border);border-radius:20px;padding:5px 12px;cursor:pointer;}
+  .controls button:hover{color:var(--red-700);border-color:var(--red-500);}
+  @media (max-width:640px){h1{font-size:34px;}h2{font-size:23px;}.cards,.grid2{grid-template-columns:1fr;}}
+  @media print{:root{--paper:#fff;}body{background:#fff;font-size:11pt;}.card,.nugget,.stat,pre{box-shadow:none;}
+    .controls,summary .chev{display:none;}details>.secbody{display:block!important;}
+    details,.card,.nugget{page-break-inside:avoid;}*{-webkit-print-color-adjust:exact;print-color-adjust:exact;}}
+</style>
+</head>
+<body>
+  <div class="topbar"><span class="logo"><span class="flag">GPX</span><span class="word">Stream</span></span>
+    <span class="doc-meta"><span class="tag">Session Recap · Internal</span><br />RootEncoder · 2026-11-28</span></div>
+  <div class="topdivide"><hr /></div>
+  <div class="wrap">
+    <div class="hero"><p class="eyebrow">Session Recap · 2026-11-28 14:31</p><h1>Upstream Sync and a WHIP Fix</h1>
+      <p class="standfirst">The fork now has Pedro&rsquo;s latest changes, plus a fix for an older fault that dropped WHIP replies.</p>
+      <div class="stats"><div class="stat"><b>2</b><span>PRs merged</span></div><div class="stat"><b>490</b><span>Tests passing</span></div><div class="stat"><b>0</b><span>Device runs</span></div></div></div>
+    <div class="controls"><button type="button" onclick="document.querySelectorAll('details').forEach(d=>d.open=true)">Expand all</button>
+      <button type="button" onclick="document.querySelectorAll('details').forEach(d=>d.open=false)">Collapse all</button></div>
+    <details open><summary><span class="htext"><span class="sec-eyebrow">Outcome</span><h2>Status</h2></span><span class="chev">&rsaquo;</span></summary><div class="secbody"><div class="cards"><div class="card"><span class="tag"><span class="dot ok"></span>Merged</span><p>Sync (R67) and the WHIP fix (R68) are in <code>gpx-alpha1</code>. 490 tests passed on Windows; Linux CI passed. Nothing went to Pedro.</p></div><div class="card"><span class="tag"><span class="dot attn"></span>Not on devices</span><p>No bench run, no tag, no app pin move.</p></div></div></div></details>
+    <details open><summary><span class="htext"><span class="sec-eyebrow">Next</span><h2>Open Items</h2></span><span class="chev">&rsaquo;</span></summary><div class="secbody"><ul class="check"><li>Move the <code>gpxstream-app</code> pin (Andy&rsquo;s call). It was on <code>ed1366560</code>, which has the WHIP fault.</li><li>Bench: live WHIP connect on BouncyCastle 1.86.</li><li>Bench: record start and rollover while streaming.</li><li>Bench: force-render off and on across a GL stop and start.</li><li>Optional: block pushes to the <code>pedro</code> remote. Offered, not answered.</li></ul></div></details>
+    <details><summary><span class="htext"><span class="sec-eyebrow">Why the tests failed</span><h2>The WHIP Fault</h2></span><span class="chev">&rsaquo;</span></summary><div class="secbody"><p>R53 accepts a WHIP packet only from the server&rsquo;s IP. The Ktor socket reported the sender as a name, <code>ANDY-DESKTOP</code>, so every reply was dropped. R68 reports the numeric address. The effect on a real media server is inferred, not observed.</p></div></details>
+    <details><summary><span class="htext"><span class="sec-eyebrow">Reference</span><h2>Gotchas</h2></span><span class="chev">&rsaquo;</span></summary><div class="secbody"><div class="grid2"><div class="nugget"><h3>Worktree removal</h3><p>After a build, <code>git worktree remove</code> can fail with &ldquo;Filename too long&rdquo; and leave the folder.</p></div><div class="nugget"><h3>CI on GPX branches</h3><p>The workflow triggers on <code>master</code> only. Start it by hand.</p></div><div class="nugget"><h3>Exit codes</h3><p>A command ending in <code>tail</code> reported success while Gradle had failed.</p></div><div class="nugget"><h3>Skipped test</h3><p><code>UdpStreamSocketSenderHostTest</code> needs a local address that has a name.</p></div></div></div></details>
+    <details><summary><span class="htext"><span class="sec-eyebrow">Honest notes</span><h2>Wrong Turns</h2></span><span class="chev">&rsaquo;</span></summary><div class="secbody"><ul class="clean"><li>Said no test ran a DTLS handshake. One does.</li><li>Blamed this machine&rsquo;s network. Linux failed the same tests.</li><li>Tried another JDK and a loopback address before logging what the filter received.</li></ul></div></details>
+    <details class="resume" open><summary><span class="htext"><span class="sec-eyebrow">Resume</span><h2>Resume Prompt</h2></span><span class="chev">&rsaquo;</span></summary><div class="secbody"><pre>The RootEncoder fork is synced (gpx-alpha1 a901470e3 plus this recap). If asked to move the
+gpxstream-app pin, read its docs/runbooks/rootencoder-fork.md and the R67 and R68 entries in the
+fork&#39;s .claude/gpx-reapply-plan-2.8.0.md first. Never push to pedroSG94.</pre></div></details>
+    <details class="raw"><summary><span class="htext"><span class="sec-eyebrow">For the record</span><h2>Full Record + AI Notes</h2></span><span class="chev">&rsaquo;</span></summary>
+      <div class="secbody"><p class="hint">Complete raw recap and notes, from the top of this file.</p><pre id="fullmd"></pre></div></details>
+  </div>
+  <footer><span>GPX Stream · Session Recap · 2026-11-28 14:31</span><span>Internal — RootEncoder</span></footer>
+  <script>document.getElementById('fullmd').textContent=document.getElementById('recap').textContent.trim();</script>
+</body>
+</html>
