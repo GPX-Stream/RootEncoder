@@ -41,8 +41,8 @@ policy text listed at the end. Everything below is from reading diffs and code, 
 ## Regression risk
 
 - BouncyCastle 1.86: lands in `whip` DTLS. Correction made during the merge: this file first said no
-  test runs a DTLS handshake. `WhipConnectStopRaceTest` does, against a fake ingest. Why it failed,
-  and what passed with an uncommitted fix, is in the policy file's "Verification status".
+  test runs a DTLS handshake. `WhipConnectStopRaceTest` does, against a fake ingest. It needed the
+  R68 fix to pass on the build machine; the R67 and R68 entries in the re-apply plan have the results.
 - `UrlParser`: the app's derived Millicast RTMP URL (`MillicastUrlBuilder`) has no empty segment
   (name and token are percent-encoded), so by reading it parses the same. An explicit user-supplied
   `rtmp://` endpoint with `//` or a trailing slash splits differently. SRT and WHIP call

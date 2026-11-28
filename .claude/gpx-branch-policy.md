@@ -74,8 +74,8 @@ checklist entry under that exact id; new work takes the next number. `GPX patch`
 item and were never enumerated separately. A bare `GPX patch` is preferred over guessing a number,
 because a wrong attribution is worse than an absent one.
 
-**Coverage.** On 2026-11-28, against `pedro/master` @ `5dcb864ca` (R67), each of the 74 `.kt` and
-`.java` files that differed from it carried at least one marker:
+**Coverage.** On 2026-11-28, against `pedro/master` @ `5dcb864ca`, with R67 and R68 in the tree,
+each of the 76 `.kt` and `.java` files that differed from it carried at least one marker:
 `git diff --name-only pedro/master -- "*.kt" "*.java" | xargs grep -L "GPX"` printed nothing. A
 sweep on 2026-10-27, against `f1bbda7ca` (R58), found no changed region without a marker within
 14 lines above it. That sweep was not rerun for R67; a rough substitute gave the same count per
@@ -296,23 +296,15 @@ peer and are not exercised off-device. Not bench-verified. No tag cut, no pin mo
 in the app's `docs/runbooks/rootencoder-fork.md` and `gpxstream-app` issue #336.
 
 **R67 (2026-11-28): upstream merge through `5dcb864ca`.**
-`gradlew clean assembleDebug test --continue` on the Windows build machine ran 488 tests: 474
-passed and 14 failed, all in `WhipConnectStopRaceTest`. A manual run of the Android CI workflow on
-Linux (run 46183398321) failed 14 tests of that class too, and so did the unmerged base
-`ed1366560` on the build machine.
-
-**Cause: an R53 fault that predates this merge.** `UdpStreamSocketKtor.readPacket` reports the
-sender as `InetSocketAddress.hostname`, which can be a reverse-resolved name. On the build machine
-it was `ANDY-DESKTOP` where the filter expected `192.168.86.239`. `PeerAddress.isSameHost` does
-not accept a name as the host of an IP peer, so the datagram is dropped. With an uncommitted local
-change that reports the numeric address, the same gate passed: 488 tests, 0 failures, including
-the DTLS handshake tests against a fake ingest on BouncyCastle 1.86. **The change is not in the
-tree.** It is a fork edit that needs its own approval. Inferred, not observed: on a device, a
-media server address that reverse-resolves to a name would stop a WHIP connect on the Ktor
-socket, which is the default.
-
-Not bench-verified. The next app pin move should watch, on the bench:
+`gradlew clean assembleDebug test --continue` on the Windows build machine, with R68 merged in,
+passed: 490 tests, 0 failures, 0 skipped. That includes the WHIP tests that run a DTLS handshake
+against a fake ingest on BouncyCastle 1.86. Not bench-verified. The next app pin move should watch,
+on the bench:
 
 - a live WHIP connect (the BouncyCastle 1.86 DTLS handshake);
 - a record start and a rollover while streaming;
 - force-render switched on and off across a GL stop and start.
+
+**R68 (2026-11-28): the Ktor UDP socket reports a numeric sender address**, which is the text
+R53's source filter compares. The record, with its build result and bench watch item, is in
+`.claude/gpx-reapply-plan-2.8.0.md`. Not bench-verified.

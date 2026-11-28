@@ -1425,10 +1425,30 @@ tags, same counts — so no patch was silently dropped by an auto-resolved hunk.
       **Marker check.** 436 marker lines before and after. The one inventory difference is the
       reworded first line of R12's reset comment. Every `.kt` and `.java` file that differs from
       `pedro/master` carries a marker.
-      **Verification.** The build gate did not pass on the committed tree: 474 of 488 tests passed.
-      The 14 `WhipConnectStopRaceTest` failures predate this merge (R53 with the Ktor socket). The
-      cause, the uncommitted experiment that passed 488 of 488 and the bench watch items are in the
-      policy file's "Verification status". Not bench-verified.
+      **Verification.** With R68 merged in, `gradlew clean assembleDebug test --continue` on the
+      Windows build machine passed: 490 tests, 0 failures, 0 skipped. Without R68,
+      `WhipConnectStopRaceTest` fails there (see R68). Not bench-verified; the watch items are in the
+      policy file's "Verification status".
+
+- [x] R68 — the Ktor UDP socket reports a datagram's sender as a numeric address (fork edit approved
+      by Andy 2026-11-28)
+      **The bug.** `UdpStreamSocketKtor.readPacket` filled `UdpPacket.host` from Ktor's
+      `InetSocketAddress.hostname`, which can be a reverse-resolved name. R53's
+      `PeerAddress.isSameHost` does not accept a name as the host of an IP peer, so
+      `readFrom(peerHost)` dropped the datagram. On the Windows build machine the host was
+      `ANDY-DESKTOP` where the filter expected `192.168.86.239`, and `WhipConnectStopRaceTest` got
+      no STUN success. Inferred, not observed on a device: a media server address that
+      reverse-resolves to a name would stop a WHIP connect on the Ktor socket, which is the default.
+      **The fix.** The host is the numeric text of the sender's `InetAddress`, through
+      `addressToString()`, which `UdpStreamSocketJava` uses for the same field. R53's filter is
+      unchanged. `getLocalHost` is unchanged.
+      **Tests.** `UdpStreamSocketSenderHostTest` sends a datagram to each UDP socket implementation
+      from a local IPv4 address that resolves to a name. Before the change the Ktor case failed
+      (`expected:<[192.168.86.239]> but was:<[ANDY-DESKTOP]>`) and the Java case passed. On a machine
+      with no such address both cases are skipped. `gradlew clean assembleDebug test --continue` on
+      the Windows build machine passed: 475 tests, 0 failures, 0 skipped. Not bench-verified. For the
+      bench: a WHIP publish to the Millicast ingest.
+      Markers: `git grep -n "GPX R68"`.
 
 ## Correction to R14's scope
 
