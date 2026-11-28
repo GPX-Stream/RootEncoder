@@ -1,32 +1,41 @@
 ---
 name: upstream-sync
-description: Bring the GPX RootEncoder fork up to date with pedroSG94/RootEncoder — assess the upstream delta first (is it worth taking, and does it supersede any GPX patch), then fast-forward the master mirror and merge into gpx-2.8 with markers, docs, and build gates intact. Use when asked to sync, update, or catch the fork up with Pedro/upstream.
+description: Bring the GPX RootEncoder fork up to date with pedroSG94/RootEncoder — assess the upstream delta first (is it worth taking, and does it supersede any GPX patch), then update the master mirror and merge into gpx-alpha1 through a PR with markers, docs, and build gates intact. Use when asked to sync, update, or catch the fork up with Pedro/upstream.
 ---
 
 # Upstream sync for the GPX RootEncoder fork
 
-This skill encodes the sync procedure used for R26, R27 and R31. Read
+This skill encodes the sync procedure used for R26, R27, R31, R52 and R67. Read
 `.claude/gpx-branch-policy.md` first — it is the authority on branches, tags, markers and
 who consumes what. The re-apply record lives in `.claude/gpx-reapply-plan-2.8.0.md`.
 
-Two invariants before anything else:
+Three invariants before anything else:
 
+- **Nothing goes to Pedro.** The `pedro` remote is fetch-only: no push, no PR, no issue or
+  comment on `pedroSG94/RootEncoder`. GPX changes stay in `GPX-Stream/RootEncoder`. Name `origin`
+  and the branch in every push (local `master` may track `pedro/master`, so check before a bare
+  `git push`). Pass `--repo GPX-Stream/RootEncoder` on every `gh pr` command: in a fork, `gh` can
+  pick the parent repository.
 - `master` is a pure mirror of `pedroSG94/RootEncoder` master: fast-forward only, never a
-  GPX commit. `gpx-master` (2.7.5 line) is **frozen** — no commits, no pin moves.
-- Active GPX work lands on `gpx-2.8` only, in its worktree at
-  `.claude/worktrees/gpx-2.8`. Never `checkout -b` in the main checkout.
+  GPX commit.
+- GPX work reaches `gpx-alpha1` through a PR from a branch in its own worktree under
+  `.claude/worktrees/`. Never `checkout -b` in the main checkout.
 
 ## 1. Preflight
 
 ```bash
 git fetch pedro --prune && git fetch origin --prune
 git worktree list
-for b in master gpx-master gpx-2.8; do git rev-list --left-right --count $b...origin/$b; done
+for b in master gpx-alpha1; do git rev-list --left-right --count $b...origin/$b; done
+git merge-base --is-ancestor master pedro/master && echo "master is a clean mirror"
 ```
 
-Local branches must be 0/0 against origin (andoodle) with clean worktrees and no stashes
-before starting. The synced-through baseline is recorded in the branch table of
-`.claude/gpx-branch-policy.md` — confirm it matches `git merge-base gpx-2.8 pedro/master`.
+Before starting: `gpx-alpha1` is 0/0 against `origin` (`GPX-Stream/RootEncoder`), its worktrees
+are clean, and the stash list holds nothing of this repo's sync work. `master` may be ahead of
+`origin/master` when upstream was pulled locally and not yet pushed; that is fine if the ancestor
+check passes. The synced-through baseline is recorded in the branch table of
+`.claude/gpx-branch-policy.md`; confirm it matches
+`git merge-base origin/gpx-alpha1 pedro/master`.
 
 ## 2. Assess the delta BEFORE merging (the gate)
 
@@ -49,7 +58,7 @@ where upstream now covers one of our patches, drop ours and take theirs — but 
 no functionality is lost.) Mechanically intersect:
 
 ```bash
-git grep -l "GPX" gpx-2.8 -- "*.kt" "*.java" | sed 's/^gpx-2.8://' | sort > /tmp/ours.txt
+git grep -l "GPX" origin/gpx-alpha1 -- "*.kt" "*.java" | sed 's/^origin\/gpx-alpha1://' | sort > /tmp/ours.txt
 git diff --name-only <synced-through>..pedro/master -- "*.kt" "*.java" | sort > /tmp/theirs.txt
 comm -12 /tmp/ours.txt /tmp/theirs.txt
 ```
@@ -62,14 +71,22 @@ R1–R<latest> gets a per-item verdict recorded in the re-apply plan, including 
 
 ## 3. Fast-forward the mirror
 
+If local `master` is behind `pedro/master`, fast-forward it. With `master` checked out in the main
+checkout, run `git merge --ff-only pedro/master` there; otherwise run
+`git fetch . pedro/master:master`. Then push it to the GPX repository:
+
 ```bash
-git fetch . pedro/master:master
-git push origin master
+git push origin refs/heads/master:refs/heads/master
 ```
 
-## 4. Merge into gpx-2.8
+## 4. Merge on a branch off gpx-alpha1
 
-In the `gpx-2.8` worktree: `git merge --no-commit --no-ff pedro/master`.
+```bash
+git worktree add -b gpx/r<next>-upstream-sync .claude/worktrees/r<next>-upstream-sync origin/gpx-alpha1
+cp local.properties .claude/worktrees/r<next>-upstream-sync/
+```
+
+In that worktree: `git merge --no-commit --no-ff pedro/master`.
 
 Conflict rules, in order:
 
@@ -90,7 +107,7 @@ lock coverage against any new `StreamBase` lifecycle path.
 
 ```bash
 # Inventory diff: must differ ONLY by deliberate retirements/extensions.
-git grep -n "GPX" origin/gpx-2.8 -- "*.kt" "*.java" | sed 's/^origin\/gpx-2.8://' | sed 's/:[0-9]*:/:/' | sort > /tmp/pre.txt
+git grep -n "GPX" origin/gpx-alpha1 -- "*.kt" "*.java" | sed 's/^origin\/gpx-alpha1://' | sed 's/:[0-9]*:/:/' | sort > /tmp/pre.txt
 grep -rn "GPX" --include="*.kt" --include="*.java" encoder library srt rtmp rtsp udp whip common extra-sources | sed 's/:[0-9]*:/:/' | sort > /tmp/post.txt
 diff /tmp/pre.txt /tmp/post.txt
 
@@ -110,28 +127,35 @@ patch — find it before going on.
   coverage count and sweep date, and the "Verification status" branch-head paragraph
   (build-verified only; name what the next pin move wants watched on the bench).
 
-## 7. Build gate, commit, push
+## 7. Build gate, commit, PR
 
 ```bash
-./gradlew assembleDebug test   # in the worktree; must pass across every module
+./gradlew clean assembleDebug test   # in the worktree; must pass across every module
 ```
 
 Commit as `GPX R<next>: merge upstream pedro/master (<headline items>)` in the R27/R31
-message style, then push `gpx-2.8`.
+message style, then:
+
+```bash
+git push -u origin gpx/r<next>-upstream-sync
+gh pr create --repo GPX-Stream/RootEncoder --base gpx-alpha1 --head gpx/r<next>-upstream-sync
+```
+
+Merge the PR with a merge commit or a fast-forward, **never squash or rebase**: either one drops
+`pedro/master` as an ancestor, which breaks the next sync's merge base.
 
 ## 8. What a sync does NOT do
 
-- **No tag, no pin move.** A `2.8.0-gpx<N>` tag ships only with a consumer-side decision:
-  bench-gate the change on the PDT, then tag and move `gpxstream-app`'s pin in the same
-  motion. Published tags never move.
+- **No tag, no pin move.** `gpxstream-app` pins a full commit SHA, and moving that pin or cutting
+  a tag is a consumer-side decision (rules in the app's `docs/runbooks/rootencoder-fork.md`).
+  Published tags never move.
 - **No new GPX code rides along.** A fork change needs its own reason and its own
   approval — "the fork is open anyway" is never one. Porting a change from another branch
   (e.g. R32 from `teaky-frame-timing`) is its own commit with its own authorization,
   after the merge.
-- **No gpx-master or 2.7.5-line changes**, ever, without an explicit unfreeze decision.
 
 ## 9. Consumer follow-through
 
-Sweep `gpxstream-app` for claims the sync made stale (its CLAUDE.md fork bullet records
-the pin's lineage and synced-through hash). If the sync's content matters to the app,
-queue the tag + pin + bench pass as its own piece of work there.
+Sweep `gpxstream-app` for claims the sync made stale (`docs/runbooks/rootencoder-fork.md`
+records the pin and what it carries). If the sync's content matters to the app, queue the pin
+move and bench pass as its own piece of work there.
